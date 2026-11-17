@@ -14,7 +14,7 @@ It runs in the cloud, so it also works from the Claude mobile app.
 > **Español:** instrucciones al final.
 
 **Want coach-grade analysis on top of the data?** The
-[Garmin Run Coach](https://agensi.io/skills/garmin-run-coach) skill on Agensi teaches your agent to
+[Garmin Run Coach](https://agensi.io/skills/garmin-run-coach-decoupling-real-weather-workouts) skill on Agensi teaches your agent to
 use these tools well: decoupling on the steady block, weather-corrected heart rate, readiness
 calls and workouts that upload cleanly.
 
@@ -104,7 +104,7 @@ MIT for the code in this repo. See `LICENSE`.
 Servidor MCP para conectar Claude con **tu propia** cuenta de Garmin Connect. Cada persona
 despliega su copia; tus credenciales quedan solo en tu cuenta de Render. Para análisis de
 entrenador sobre estos datos, existe el skill
-[Garmin Run Coach](https://agensi.io/skills/garmin-run-coach) en Agensi.
+[Garmin Run Coach](https://agensi.io/skills/garmin-run-coach-decoupling-real-weather-workouts) en Agensi.
 
 1. Pulsa **Deploy to Render**. Escribe tu correo y contraseña de Garmin (cuentas sin
    verificación en dos pasos) y tu desfase horario (Bogotá/Lima `-5`, Ciudad de México `-6`).
