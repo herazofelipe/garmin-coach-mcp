@@ -1,0 +1,14 @@
+# Credentials: never in the repo
+garmin_tokens.txt
+*.env
+.env
+
+# Generated at build time from garmin-fit-sdk (FIT SDK license: not redistributed)
+garmin_exercise_catalog.json
+
+# Python
+__pycache__/
+*.pyc
+
+# macOS
+.DS_Store
