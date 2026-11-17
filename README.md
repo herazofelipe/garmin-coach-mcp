@@ -7,6 +7,8 @@ schedule and delete running, strength and swim workouts on your watch.
 
 It runs in the cloud, so it also works from the Claude mobile app.
 
+![Session analysis](docs/screenshot-2.png)
+
 [![Deploy to Render](https://render.com/images/deploy-to-render-button.svg)](https://render.com/deploy?repo=https://github.com/herazofelipe/garmin-coach-mcp)
 
 > **Español:** instrucciones al final.
