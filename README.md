@@ -13,6 +13,9 @@ It runs in the cloud, so it also works from the Claude mobile app.
 
 > **Español:** instrucciones al final.
 
+**Prefer a guided setup?** The [Garmin Connect MCP Setup](https://agensi.io/skills/garmin-connect-mcp-setup-deploy-connect-verify) skill walks your agent
+through deploying, connecting and verifying this server, and fixes the usual errors.
+
 **Want coach-grade analysis on top of the data?** The
 [Garmin Run Coach](https://agensi.io/skills/garmin-run-coach-decoupling-real-weather-workouts) skill on Agensi teaches your agent to
 use these tools well: decoupling on the steady block, weather-corrected heart rate, readiness
@@ -102,7 +105,8 @@ MIT for the code in this repo. See `LICENSE`.
 ## Español
 
 Servidor MCP para conectar Claude con **tu propia** cuenta de Garmin Connect. Cada persona
-despliega su copia; tus credenciales quedan solo en tu cuenta de Render. Para análisis de
+despliega su copia; tus credenciales quedan solo en tu cuenta de Render. Si prefieres una instalación
+guiada, está el skill [Garmin Connect MCP Setup](https://agensi.io/skills/garmin-connect-mcp-setup-deploy-connect-verify). Para análisis de
 entrenador sobre estos datos, existe el skill
 [Garmin Run Coach](https://agensi.io/skills/garmin-run-coach-decoupling-real-weather-workouts) en Agensi.
 
