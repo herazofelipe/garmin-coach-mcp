@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import difflib
 import json
+import logging
 import math
 import os
 import threading
@@ -92,6 +93,20 @@ def _mcp_path() -> str:
 
 
 MCP_PATH = _mcp_path()
+
+
+class _HideSecretPath(logging.Filter):
+    """Uvicorn registra la ruta de cada petición y la ruta lleva el secreto del conector:
+    se reemplaza por /mcp/*** para que no quede en los logs de Render."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        if MCP_PATH.rstrip("/") != "/mcp" and isinstance(record.args, tuple):
+            record.args = tuple(a.replace(MCP_PATH, "/mcp/***") if isinstance(a, str) else a
+                                for a in record.args)
+        return True
+
+
+logging.getLogger("uvicorn.access").addFilter(_HideSecretPath())
 
 mcp = FastMCP(
     "garmin_mcp",
@@ -1061,7 +1076,8 @@ def garmin_get_readiness_range(start_date: str, end_date: Optional[str] = None) 
     Args:
         start_date: Fecha inicial ISO 'YYYY-MM-DD'.
         end_date: Fecha final ISO 'YYYY-MM-DD'. Por defecto hoy.
-            Hasta 366 días (se piden en tramos de 31 días).
+            Hasta 366 días (se piden en tramos de 31 días); por encima de 62 días
+            devuelve promedios semanales.
 
     Returns:
         dict: {"start", "end", "days": [ {date, score, level, ...}, ... ] }.
@@ -1073,8 +1089,8 @@ def garmin_get_readiness_range(start_date: str, end_date: Optional[str] = None) 
         d1 = datetime.fromisoformat(end).date()
         if d1 < d0:
             return {"error": "end_date no puede ser anterior a start_date."}
-        if (d1 - d0).days + 1 > TREND_MAX_DAYS:
-            return {"error": f"Rango demasiado amplio (máx. {TREND_MAX_DAYS} días)."}
+        if (d1 - d0).days + 1 > READINESS_MAX_DAYS:
+            return {"error": f"Rango demasiado amplio (máx. {READINESS_MAX_DAYS} días)."}
 
         def _slim(iso, rec):
             return {"date": iso, "score": rec.get("score"), "level": rec.get("level"),
@@ -1110,6 +1126,9 @@ def garmin_get_readiness_range(start_date: str, end_date: Optional[str] = None) 
                 got = _per_day(_one_day, list(_days(c0, c1)))
             by_day.update(got)
         days = [by_day[d] for d in sorted(by_day)]
+        if len(list(_days(d0, d1))) > WEEKLY_AUTO_DAYS:   # 1 año diario pesa ~55 KB
+            return {"start": start, "end": end, "count": len(days),
+                    "resolution": "weekly", "weeks": _weekly(days)}
         return {"start": start, "end": end, "count": len(days), "days": days}
     except Exception as e:  # noqa: BLE001
         return _err(e)
@@ -2980,7 +2999,9 @@ def _day_resp(call, iso):
 # tramos de 31 días y se unen. Si la métrica tiene endpoint de rango se usa (1 llamada por
 # tramo); si no, o si el tramo vuelve vacío o ilegible, se pide día a día con 4 hilos.
 CHUNK_DAYS = 31
-TREND_MAX_DAYS = 366        # métricas con endpoint de rango
+TREND_MAX_DAYS = 1096       # métricas con endpoint de rango (3 años)
+READINESS_MAX_DAYS = 366
+MONTHLY_AUTO_DAYS = 400     # resolución 'auto': mensual por encima de esto
 TREND_PER_DAY_MAX = 186     # métricas sin endpoint de rango (1 llamada por día)
 WEEKLY_AUTO_DAYS = 62       # resolución 'auto': semanal por encima de esto
 
@@ -3158,16 +3179,27 @@ def _daily_series(metric: str, d0: _date, d1: _date, force_per_day: bool = False
     return recs, used
 
 
-def _weekly(days: list[dict]) -> list[dict]:
-    """Promedio por semana (lunes a domingo) de los campos numéricos."""
+def _res_mode(resolution: Optional[str], n_days: int) -> str:
+    res = (resolution or "auto").strip().lower()
+    if res in ("daily", "weekly", "monthly"):
+        return res
+    return ("daily" if n_days <= WEEKLY_AUTO_DAYS else
+            "weekly" if n_days <= MONTHLY_AUTO_DAYS else "monthly")
+
+
+def _weekly(days: list[dict], monthly: bool = False) -> list[dict]:
+    """Promedio por semana (lunes a domingo) o por mes de los campos numéricos."""
     weeks: dict[str, list[dict]] = {}
     for d in days:
         dt = _iso(d["date"])
-        weeks.setdefault((dt - timedelta(days=dt.weekday())).isoformat(), []).append(d)
+        key = dt.isoformat()[:7] if monthly else \
+            (dt - timedelta(days=dt.weekday())).isoformat()
+        weeks.setdefault(key, []).append(d)
     out = []
     for wk in sorted(weeks):
         rows = weeks[wk]
-        rec: dict[str, Any] = {"week_start": wk, "n_days": len(rows)}
+        rec: dict[str, Any] = {"month" if monthly else "week_start": wk,
+                               "n_days": len(rows)}
         keys = {k for r in rows for k in r if k != "date"}
         for k in sorted(keys):
             nums = [r[k] for r in rows if isinstance(r.get(k), (int, float))
@@ -3375,13 +3407,14 @@ def garmin_get_trend(metric: str, start_date: str, end_date: Optional[str] = Non
                 endurance_score.
         start_date: Fecha inicial ISO 'YYYY-MM-DD'.
         end_date: Fecha final ISO 'YYYY-MM-DD'. Por defecto hoy.
-        resolution: 'auto' (diaria hasta 62 días, semanal por encima), 'daily' o
-            'weekly' (promedio lunes-domingo). Solo para métricas diarias.
+        resolution: 'auto' (diaria hasta 62 días, semanal hasta 400, mensual por
+            encima), 'daily', 'weekly' (promedio lunes-domingo) o 'monthly'.
+            intensity_minutes y endurance_score siempre son semanales.
 
-    Límites: hasta 366 días para todas, en tramos (Body Battery de 28 días, Garmin
+    Límites: hasta 3 años (1096 días), en tramos (Body Battery de 28 días, Garmin
     rechaza más). spo2 y skin_temp no tienen consulta por rango en Garmin (1 llamada
-    por día) → hasta 186 días. intensity_minutes y endurance_score son semanales. Añadir ':per_day' a la métrica fuerza la
-    consulta día a día (diagnóstico).
+    por día) → hasta 186 días. Añadir ':per_day' a la métrica fuerza la consulta día a
+    día (diagnóstico).
     """
     m = (metric or "").strip().lower()
     force_per_day = m.endswith(":per_day")
@@ -3397,17 +3430,17 @@ def garmin_get_trend(metric: str, start_date: str, end_date: Optional[str] = Non
             all_days = list(_days(d0, d1))
             days = [{"date": d, **recs[d]} for d in all_days if d in recs]
             missing = [d for d in all_days if d not in recs]
-            res = (resolution or "auto").strip().lower()
-            weekly = res == "weekly" or (res == "auto" and len(all_days) > WEEKLY_AUTO_DAYS)
+            mode = _res_mode(resolution, len(all_days))
             out = {"metric": m, "start": d0.isoformat(), "end": d1.isoformat(),
-                   "count": len(days), "resolution": "weekly" if weekly else "daily",
+                   "count": len(days), "resolution": mode,
                    "chunks": used["range"] + used["per_day"],
                    "source": ("rango" if not used["per_day"] else
                               "día a día" if not used["range"] else "mixta")}
-            if weekly:
-                out["weeks"] = _weekly(days)
-            else:
+            if mode == "daily":
                 out["days"] = days
+            else:
+                out["weeks" if mode == "weekly" else "months"] = _weekly(
+                    days, monthly=mode == "monthly")
             if missing:
                 out["missing_days_count"] = len(missing)
                 if len(missing) <= 31:
@@ -3419,18 +3452,17 @@ def garmin_get_trend(metric: str, start_date: str, end_date: Optional[str] = Non
 
         d0, d1 = _range(start_date, end_date, _today(), TREND_MAX_DAYS)
         a, b = d0.isoformat(), d1.isoformat()
-        res = (resolution or "auto").strip().lower()
-        weekly = res == "weekly" or (res == "auto"
-                                     and (d1 - d0).days + 1 > WEEKLY_AUTO_DAYS)
+        mode = _res_mode(resolution, (d1 - d0).days + 1)
         n_chunks = 0
 
         def _pack(days: list[dict], key: str, extra: Optional[dict] = None) -> dict:
             out = {"metric": m, "start": a, "end": b, "count": len(days),
-                   "resolution": "weekly" if weekly else "daily", "chunks": n_chunks}
-            if weekly:
-                out["weeks"] = _weekly(days)
-            else:
+                   "resolution": mode, "chunks": n_chunks}
+            if mode == "daily":
                 out["days"] = days
+            else:
+                out["weeks" if mode == "weekly" else "months"] = _weekly(
+                    days, monthly=mode == "monthly")
             s = _summary(days, key)
             if s:
                 out["summary"] = s
