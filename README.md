@@ -60,7 +60,7 @@ calls and workouts that upload cleanly.
 
 | Group | Tools |
 |---|---|
-| Activities | list, by date, last, full analysis (summary, splits, typed splits, zones, optional weather), compare, progress summary, personal records |
+| Activities | list, by date, last, full analysis (summary, laps, workout blocks, zones in minutes, optional weather; compact, ~5-10 KB), compare, progress summary, personal records |
 | Derived metrics | aerobic decoupling Pa:HR / Pw:HR on the active block, cardiac drift, HR recovery, HR curve |
 | Daily physiology | morning check, HRV (+detail), sleep, stress, Body Battery events, daily summary, altitude vitals, body composition, hydration |
 | Cycle & skin temperature | nightly skin-temperature deviation with biphasic shift detection, Garmin menstrual-cycle day/phase, `garmin_cycle_insights` (phase, ovulation and fertile-window estimates, evidence-based training considerations) |

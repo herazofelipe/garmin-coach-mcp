@@ -854,6 +854,39 @@ def garmin_get_last_activity() -> dict:
     annotations={"title": "Análisis completo de actividad", "readOnlyHint": True,
                  "destructiveHint": False, "idempotentHint": True, "openWorldHint": True},
 )
+def _r1(v: Any, div: float = 1.0, nd: int = 1) -> Optional[float]:
+    if not isinstance(v, (int, float)) or isinstance(v, bool):
+        return None
+    return int(round(v / div)) if nd == 0 else round(v / div, nd)
+
+
+def _compact_lap(x: dict, i: int) -> dict:
+    """Vuelta o bloque en formato legible (km, min, ritmo, FC, potencia, cadencia)."""
+    dist, dur = x.get("distance"), x.get("duration")
+    return {k: v for k, v in {
+        "n": x.get("lapIndex", i + 1),
+        "type": x.get("type") or x.get("intensityType"),
+        "start_gmt": (x.get("startTimeGMT") or "")[:19] or None,
+        "duration_min": _r1(dur, 60.0),
+        "distance_km": _r1(dist, 1000.0, 2),
+        "pace_min_km": _pace_from(dur, dist) if dist and dist > 50 else None,
+        "avg_hr": _r1(x.get("averageHR"), 1, 0),
+        "max_hr": _r1(x.get("maxHR"), 1, 0),
+        "avg_power_w": _r1(x.get("averagePower"), 1, 0),
+        "norm_power_w": _r1(x.get("normalizedPower"), 1, 0),
+        "cadence_spm": _r1(x.get("averageRunCadence"), 1, 0),
+        "stride_cm": _r1(x.get("strideLength"), 1, 0),
+        "gct_ms": _r1(x.get("groundContactTime"), 1, 0),
+    }.items() if v is not None}
+
+
+def _compact_zones(z: Any) -> Any:
+    if not isinstance(z, list):
+        return z
+    return [{"zone": r.get("zoneNumber"), "from": r.get("zoneLowBoundary"),
+             "min": _r1(r.get("secsInZone"), 60.0)} for r in z if isinstance(r, dict)]
+
+
 def garmin_get_activity_analysis(activity_id: str, include_weather: bool = False) -> dict:
     """Análisis completo de una actividad en una sola llamada: resumen + splits estándar
     (vuelta a vuelta) + splits tipados (por bloque) + zonas de FC + zonas de potencia.
@@ -870,9 +903,12 @@ def garmin_get_activity_analysis(activity_id: str, include_weather: bool = False
             Sin GPS (cinta) no hay consulta a Open-Meteo. Por defecto False.
 
     Returns:
-        dict: {"activity_id", "summary", "splits", "typed_splits", "hr_zones",
-               "power_zones", "weather"(opc.)}. Cada sub-bloque puede ser null si no
-               está disponible, con su error indicado en "_notes".
+        dict: {"activity_id", "summary", "laps", "blocks", "hr_zones", "power_zones",
+               "weather"(opc.)}. "laps" son las vueltas; "blocks" los bloques del
+               entrenamiento (calentamiento, activos, recuperación, vuelta a la calma),
+               sin los micro-tramos de correr/caminar/parado que Garmin detecta solo.
+               Distancias en km, duraciones en min, zonas en minutos. Cada sub-bloque
+               puede ser null si no está disponible, con su error en "_notes".
     """
     aid = str(activity_id)
     out: dict[str, Any] = {"activity_id": aid, "_notes": {}}
@@ -906,6 +942,22 @@ def garmin_get_activity_analysis(activity_id: str, include_weather: bool = False
         out["weather"] = _session_weather(full, ts or [], gw)
     if isinstance(out.get("summary"), dict) and summary_is_empty(out["summary"]) and ts:
         out["summary"].update(summary_from_splits(ts))
+
+    # Formato compacto: el crudo de Garmin pesa 40-60 KB por sesión.
+    laps_raw = out.pop("splits", None)
+    laps = (laps_raw or {}).get("lapDTOs") if isinstance(laps_raw, dict) else None
+    out["laps"] = [_compact_lap(x, i) for i, x in enumerate(laps or [])] if laps_raw else None
+    out.pop("typed_splits", None)
+    if ts is not None:
+        blocks = [x for x in ts if str(x.get("type") or "").startswith("INTERVAL_")]
+        out["blocks"] = [_compact_lap(x, i) for i, x in enumerate(blocks)]
+    else:
+        out["blocks"] = None
+    for key in ("splits", "typed_splits"):
+        if key in out["_notes"]:
+            out["_notes"]["laps" if key == "splits" else "blocks"] = out["_notes"].pop(key)
+    out["hr_zones"] = _compact_zones(out.get("hr_zones"))
+    out["power_zones"] = _compact_zones(out.get("power_zones"))
 
     if not out["_notes"]:
         out.pop("_notes")
