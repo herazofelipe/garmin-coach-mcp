@@ -85,6 +85,21 @@ contraceptive method.** Sexual-activity entries and free-text notes are never re
 
 Tool descriptions are in Spanish; Claude answers in your language anyway.
 
+## Updating
+
+Your copy does **not** update by itself when this repo changes.
+
+1. **Get the new code.** In Render, open your service → **Manual Deploy** → **Deploy latest
+   commit**. Wait until it shows *Live*. Fixes and improvements to existing tools work right
+   away, with nothing to change in Claude.
+2. **Refresh Claude only when tools are added or changed.** Claude keeps the list of tools and
+   their parameters it saw when you connected. If a release adds tools or parameters
+   ([commits](https://github.com/herazofelipe/garmin-coach-mcp/commits/main)), go to claude.ai
+   (web) → Settings → Connectors, remove the Garmin connector and add it again with the same
+   URL, then open a new chat.
+
+Your URL, credentials and secret stay the same across updates.
+
 ## Important
 
 - **Unofficial access.** This uses [`python-garminconnect`](https://github.com/cyberjunky/python-garminconnect),
@@ -136,3 +151,13 @@ médico ni un método anticonceptivo.
 
 Si tu cuenta usa verificación en dos pasos, genera `GARMIN_TOKENS` con
 `garmin_login_colab.ipynb` (Google Colab, funciona desde el celular).
+
+**Actualizar.** Tu copia no se actualiza sola cuando cambia este repositorio.
+
+1. En Render: tu servicio → **Manual Deploy** → **Deploy latest commit**, y espera a que diga
+   *Live*. Las mejoras de las herramientas que ya tenías funcionan de inmediato.
+2. Solo si la versión agrega herramientas o parámetros nuevos: en claude.ai (web) → Ajustes →
+   Conectores, quita el conector de Garmin, agrégalo otra vez con la misma URL y abre un chat
+   nuevo.
+
+La URL, las credenciales y el secreto no cambian al actualizar.
