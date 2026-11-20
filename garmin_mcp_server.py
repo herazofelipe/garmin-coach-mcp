@@ -931,6 +931,7 @@ def garmin_get_readiness_range(start_date: str, end_date: Optional[str] = None) 
     Args:
         start_date: Fecha inicial ISO 'YYYY-MM-DD'.
         end_date: Fecha final ISO 'YYYY-MM-DD'. Por defecto hoy.
+            Hasta 366 días (se piden en tramos de 31 días).
 
     Returns:
         dict: {"start", "end", "days": [ {date, score, level, ...}, ... ] }.
@@ -942,29 +943,41 @@ def garmin_get_readiness_range(start_date: str, end_date: Optional[str] = None) 
         d1 = datetime.fromisoformat(end).date()
         if d1 < d0:
             return {"error": "end_date no puede ser anterior a start_date."}
-        if (d1 - d0).days > 31:
-            return {"error": "Rango demasiado amplio (máx. 31 días)."}
+        if (d1 - d0).days + 1 > TREND_MAX_DAYS:
+            return {"error": f"Rango demasiado amplio (máx. {TREND_MAX_DAYS} días)."}
 
-        days = []
-        cur = d0
-        while cur <= d1:
-            iso = cur.isoformat()
-            try:
-                r = _call("get_training_readiness", iso)
-                rec = r[0] if isinstance(r, list) and r else r
-                if isinstance(rec, dict):
-                    days.append({
-                        "date": iso,
-                        "score": rec.get("score"),
-                        "level": rec.get("level"),
-                        "feedback": rec.get("feedbackShort") or rec.get("feedbackLong"),
-                        "sleep_score": rec.get("sleepScore"),
-                        "recovery_time_h": rec.get("recoveryTime"),
-                        "hrv_factor": rec.get("hrvFactorPercent"),
-                    })
-            except Exception:  # noqa: BLE001 — día sin dato; lo omitimos
-                pass
-            cur = cur.fromordinal(cur.toordinal() + 1)
+        def _slim(iso, rec):
+            return {"date": iso, "score": rec.get("score"), "level": rec.get("level"),
+                    "feedback": rec.get("feedbackShort") or rec.get("feedbackLong"),
+                    "sleep_score": rec.get("sleepScore"),
+                    "recovery_time_h": rec.get("recoveryTime"),
+                    "hrv_factor": rec.get("hrvFactorPercent")}
+
+        def _one_day(_c, iso):
+            r = _call("get_training_readiness", iso)
+            rec = r[0] if isinstance(r, list) and r else r
+            return _slim(iso, rec) if isinstance(rec, dict) and rec.get("score") is not None \
+                else None
+
+        by_day: dict[str, dict] = {}
+        for c0, c1 in _chunks(d0, d1):
+            got: dict[str, dict] = {}
+            try:   # 1 llamada por tramo; varias entradas por día -> la más reciente
+                raw = _call("get_training_readiness_range", c0.isoformat(), c1.isoformat())
+                latest: dict[str, dict] = {}
+                for rec in raw if isinstance(raw, list) else []:
+                    iso = (rec.get("calendarDate") or "")[:10]
+                    if iso and rec.get("score") is not None and (
+                            iso not in latest or str(rec.get("timestamp") or "")
+                            >= str(latest[iso].get("timestamp") or "")):
+                        latest[iso] = rec
+                got = {iso: _slim(iso, r) for iso, r in latest.items()}
+            except Exception:  # noqa: BLE001 — sin endpoint de rango: día a día
+                got = {}
+            if not got:
+                got = _per_day(_one_day, list(_days(c0, c1)))
+            by_day.update(got)
+        days = [by_day[d] for d in sorted(by_day)]
         return {"start": start, "end": end, "count": len(days), "days": days}
     except Exception as e:  # noqa: BLE001
         return _err(e)
@@ -2821,6 +2834,201 @@ def _day_resp(call, iso):
             "avg_sleep": r.get("avgSleepRespirationValue")}
 
 
+# ---------------------------------------------------------------- rangos largos
+# Garmin limita muchas consultas por rango (~28-31 días). Los rangos largos se parten en
+# tramos de 31 días y se unen. Si la métrica tiene endpoint de rango se usa (1 llamada por
+# tramo); si no, o si el tramo vuelve vacío o ilegible, se pide día a día con 4 hilos.
+CHUNK_DAYS = 31
+TREND_MAX_DAYS = 366        # métricas con endpoint de rango
+TREND_PER_DAY_MAX = 186     # métricas sin endpoint de rango (1 llamada por día)
+WEEKLY_AUTO_DAYS = 62       # resolución 'auto': semanal por encima de esto
+
+
+def _chunks(d0: _date, d1: _date, size: int = CHUNK_DAYS):
+    cur = d0
+    while cur <= d1:
+        end = min(cur + timedelta(days=size - 1), d1)
+        yield cur, end
+        cur = end + timedelta(days=1)
+
+
+def _rows_by_date(obj: Any, skip_parents: tuple = ("cycling",)) -> dict[str, dict]:
+    """Filas con calendarDate en cualquier anidación (fusiona las del mismo día)."""
+    rows: dict[str, dict] = {}
+
+    def visit(o, parent=None, depth=0):
+        if depth > 6:
+            return
+        if isinstance(o, dict):
+            cd = o.get("calendarDate")
+            if parent not in skip_parents and isinstance(cd, str) and len(cd) >= 10:
+                rows.setdefault(cd[:10], {}).update(o)
+            for k, v in o.items():
+                if parent in skip_parents:
+                    continue
+                visit(v, k, depth + 1)
+        elif isinstance(o, list):
+            for v in o:
+                visit(v, parent, depth + 1)
+
+    visit(obj)
+    return rows
+
+
+def _rfirst(row: dict, *keys: str) -> Any:
+    """Primer valor no nulo entre varias claves posibles (también anidadas)."""
+    want = {k.lower() for k in keys}
+    stack = [row]
+    while stack:
+        o = stack.pop(0)
+        if isinstance(o, dict):
+            for k, v in o.items():
+                if k.lower() in want and v is not None:
+                    return v
+            stack.extend(v for v in o.values() if isinstance(v, (dict, list)))
+        elif isinstance(o, list):
+            stack.extend(o)
+    return None
+
+
+def _secs_h(v: Any) -> Optional[float]:
+    return _h(v) if isinstance(v, (int, float)) and not isinstance(v, bool) else None
+
+
+def _r_hrv(row):
+    b = row.get("baseline") or {}
+    return {"last_night_avg": row.get("lastNightAvg"), "weekly_avg": row.get("weeklyAvg"),
+            "status": row.get("status"),
+            "balanced_low": b.get("balancedLow"), "balanced_upper": b.get("balancedUpper")}
+
+
+def _r_rhr(row):
+    return {"resting_hr": _rfirst(row, "value", "restingHeartRate", "restingHR")}
+
+
+def _r_sleep(row):
+    score = _rfirst(row, "overallSleepScore", "sleepScore", "sleepScoreValue")
+    if isinstance(score, dict):
+        score = score.get("value")
+    return {"score": score,
+            "total_h": _secs_h(_rfirst(row, "totalSleepTimeInSeconds", "sleepTimeSeconds",
+                                       "totalSleepSeconds", "sleepTimeInSeconds")),
+            "deep_h": _secs_h(_rfirst(row, "deepSleepSeconds", "deepTime",
+                                      "deepSleepTimeInSeconds")),
+            "rem_h": _secs_h(_rfirst(row, "remSleepSeconds", "remTime",
+                                     "remSleepTimeInSeconds")),
+            "awake_h": _secs_h(_rfirst(row, "awakeSleepSeconds", "awakeTime",
+                                       "awakeTimeInSeconds")),
+            "avg_overnight_hrv": _rfirst(row, "avgOvernightHrv", "overnightHrv"),
+            "resting_hr": _rfirst(row, "restingHeartRate", "restingHR")}
+
+
+def _r_stress(row):
+    return {"avg": _rfirst(row, "overallStressLevel", "avgStressLevel",
+                           "averageStressLevel"),
+            "max": _rfirst(row, "maxStressLevel"),
+            "rest_pct": _rfirst(row, "restStressPercentage"),
+            "high_pct": _rfirst(row, "highStressPercentage")}
+
+
+def _r_resp(row):
+    return {"avg_waking": _rfirst(row, "avgWakingRespirationValue", "wakingAvgRespiration",
+                                  "avgWakingRespiration", "avgWaking"),
+            "avg_sleep": _rfirst(row, "avgSleepRespirationValue", "sleepAvgRespiration",
+                                 "avgSleepRespiration", "avgSleep")}
+
+
+def _r_vo2(row):
+    return {"vo2max_running": _rfirst(row, "vo2MaxPreciseValue", "vo2MaxValue")}
+
+
+def _plausible(metric: str, recs: dict[str, dict]) -> bool:
+    """Descarta un tramo leído por rango si los valores no tienen sentido (claves
+    distintas a las esperadas): entonces se repite día a día."""
+    vals = [r for r in recs.values() if not _all_null(r)]
+    if not vals:
+        return False
+    if metric == "sleep":
+        tot = [r["total_h"] for r in vals if isinstance(r.get("total_h"), (int, float))]
+        return bool(tot) and all(0.5 <= t <= 16 for t in tot)
+    key = _SUMMARY_KEY.get(metric)
+    nums = [r.get(key) for r in vals if isinstance(r.get(key), (int, float))]
+    return bool(nums)
+
+
+_RANGE_SRC = {"hrv": ("get_hrv_data_range", _r_hrv),
+              "resting_hr": ("get_rhr_daily", _r_rhr),
+              "sleep": ("get_sleep_daily", _r_sleep),
+              "stress": ("get_daily_stress_stats", _r_stress),
+              "respiration": ("get_daily_respiration_stats", _r_resp),
+              "vo2max": ("get_max_metrics_range", _r_vo2)}
+
+
+def _per_day(fn, isos: list[str]) -> dict[str, dict]:
+    from concurrent.futures import ThreadPoolExecutor
+
+    def one(iso):
+        try:
+            return iso, fn(_call, iso)
+        except Exception:  # noqa: BLE001 — día sin dato
+            return iso, None
+
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        return {iso: rec for iso, rec in pool.map(one, isos) if rec and not _all_null(rec)}
+
+
+def _daily_series(metric: str, d0: _date, d1: _date, force_per_day: bool = False):
+    """{fecha: registro} de una métrica diaria en tramos de 31 días + fuentes usadas."""
+    recs: dict[str, dict] = {}
+    used: dict[str, int] = {"range": 0, "per_day": 0}
+    for c0, c1 in _chunks(d0, d1):
+        isos = list(_days(c0, c1))
+        got: dict[str, dict] = {}
+        src = None if force_per_day else _RANGE_SRC.get(metric)
+        if src:
+            method, extract = src
+            try:
+                raw = _call(method, c0.isoformat(), c1.isoformat())
+                rows = _rows_by_date(raw)
+                got = {d: extract(r) for d, r in rows.items() if d in isos}
+                got = {d: r for d, r in got.items() if not _all_null(r)}
+                if not _plausible(metric, got):
+                    got = {}
+            except Exception:  # noqa: BLE001 — método ausente o error: día a día
+                got = {}
+        if got:
+            used["range"] += 1
+        else:
+            got = _per_day(_DAILY[metric], isos)
+            used["per_day"] += 1
+        recs.update(got)
+    return recs, used
+
+
+def _weekly(days: list[dict]) -> list[dict]:
+    """Promedio por semana (lunes a domingo) de los campos numéricos."""
+    weeks: dict[str, list[dict]] = {}
+    for d in days:
+        dt = _iso(d["date"])
+        weeks.setdefault((dt - timedelta(days=dt.weekday())).isoformat(), []).append(d)
+    out = []
+    for wk in sorted(weeks):
+        rows = weeks[wk]
+        rec: dict[str, Any] = {"week_start": wk, "n_days": len(rows)}
+        keys = {k for r in rows for k in r if k != "date"}
+        for k in sorted(keys):
+            nums = [r[k] for r in rows if isinstance(r.get(k), (int, float))
+                    and not isinstance(r.get(k), bool)]
+            if nums:
+                rec[k] = round(sum(nums) / len(nums), 2)
+            else:
+                txt = [r[k] for r in rows if isinstance(r.get(k), str)]
+                if txt:
+                    rec[k] = txt[-1]            # p. ej. estado de HRV al final de la semana
+        out.append(rec)
+    return out
+
+
 def _day_skin(call, iso):
     s = _skin_from_sleep(call("get_sleep_data", iso))
     return {"deviation_c": s["deviation_c"], "calibration_days": s["calibration_days"]}
@@ -3001,10 +3209,12 @@ def garmin_get_personal_records(activity_type: str = "running") -> dict:
 
 # ------------------------------------------------------------------ tendencias
 @mcp.tool(name="garmin_get_trend", annotations={"title": "Tendencia de una métrica", **_RO})
-def garmin_get_trend(metric: str, start_date: str, end_date: Optional[str] = None) -> dict:
-    """Serie día a día de UNA métrica en un rango, con resumen (media, mín, máx,
-    primero, último). Sirve para ver trayectorias: HRV de las últimas 2-4 semanas,
-    FC en reposo, sueño, estrés, VO2max, aclimatación (SpO2/respiración), etc.
+def garmin_get_trend(metric: str, start_date: str, end_date: Optional[str] = None,
+                     resolution: str = "auto") -> dict:
+    """Serie de UNA métrica en un rango, con resumen (media, mín, máx, primero,
+    último). Sirve para ver trayectorias: HRV de semanas o meses, FC en reposo, sueño,
+    estrés, VO2max, aclimatación (SpO2/respiración), temperatura de la piel, etc.
+    Los rangos largos se parten solos en tramos de 31 días y se unen.
 
     Args:
         metric: hrv | sleep | resting_hr | stress | vo2max | spo2 | respiration |
@@ -3012,32 +3222,42 @@ def garmin_get_trend(metric: str, start_date: str, end_date: Optional[str] = Non
                 endurance_score.
         start_date: Fecha inicial ISO 'YYYY-MM-DD'.
         end_date: Fecha final ISO 'YYYY-MM-DD'. Por defecto hoy.
+        resolution: 'auto' (diaria hasta 62 días, semanal por encima), 'daily' o
+            'weekly' (promedio lunes-domingo). Solo para métricas diarias.
 
-    Límites: las métricas diarias (hrv, sleep, resting_hr, stress, vo2max, spo2,
-    respiration, skin_temp) hacen 1 llamada por día → máx. 31 días. body_battery,
-    intensity_minutes (semanal), hill_score y endurance_score van en una sola
-    llamada → hasta 366 días.
+    Límites: hasta 366 días. spo2 y skin_temp no tienen consulta por rango en Garmin
+    (1 llamada por día) → hasta 186 días. Añadir ':per_day' a la métrica fuerza la
+    consulta día a día (diagnóstico).
     """
     m = (metric or "").strip().lower()
+    force_per_day = m.endswith(":per_day")
+    m = m.split(":")[0]
     if m not in METRICS:
         return {"error": f"Métrica '{metric}' no soportada. Opciones: {', '.join(METRICS)}."}
     try:
         if m in _DAILY:
-            d0, d1 = _range(start_date, end_date, _today(), MAX_DAYS)
-            days, missing = [], []
-            for iso in _days(d0, d1):
-                try:
-                    rec = _DAILY[m](_call, iso)
-                    if _all_null(rec):
-                        missing.append(iso)
-                    else:
-                        days.append({"date": iso, **rec})
-                except Exception:  # noqa: BLE001 — día sin dato
-                    missing.append(iso)
+            per_day_only = force_per_day or m not in _RANGE_SRC
+            d0, d1 = _range(start_date, end_date, _today(),
+                            TREND_PER_DAY_MAX if per_day_only else TREND_MAX_DAYS)
+            recs, used = _daily_series(m, d0, d1, force_per_day)
+            all_days = list(_days(d0, d1))
+            days = [{"date": d, **recs[d]} for d in all_days if d in recs]
+            missing = [d for d in all_days if d not in recs]
+            res = (resolution or "auto").strip().lower()
+            weekly = res == "weekly" or (res == "auto" and len(all_days) > WEEKLY_AUTO_DAYS)
             out = {"metric": m, "start": d0.isoformat(), "end": d1.isoformat(),
-                   "count": len(days), "days": days}
+                   "count": len(days), "resolution": "weekly" if weekly else "daily",
+                   "chunks": used["range"] + used["per_day"],
+                   "source": ("rango" if not used["per_day"] else
+                              "día a día" if not used["range"] else "mixta")}
+            if weekly:
+                out["weeks"] = _weekly(days)
+            else:
+                out["days"] = days
             if missing:
-                out["missing_days"] = missing
+                out["missing_days_count"] = len(missing)
+                if len(missing) <= 31:
+                    out["missing_days"] = missing
             s = _summary(days, _SUMMARY_KEY[m])
             if s:
                 out["summary"] = s
