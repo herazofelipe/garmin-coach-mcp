@@ -22,6 +22,9 @@ through deploying, connecting and verifying this server, and fixes the usual err
 use these tools well: decoupling on the steady block, weather-corrected heart rate, readiness
 calls and workouts that upload cleanly.
 
+**Both together:** the [Garmin AI Running Kit: Setup & Coach](https://agensi.io/bundles/garmin-ai-running-kit-setup-coach)
+bundle includes the two skills for $8 instead of $10.
+
 ## How it stays private
 
 - **Everyone deploys their own copy.** Your Garmin credentials live only in *your* Render
@@ -135,7 +138,9 @@ Servidor MCP para conectar Claude con **tu propia** cuenta de Garmin Connect. Ca
 despliega su copia; tus credenciales quedan solo en tu cuenta de Render. Si prefieres una instalación
 guiada, está el skill [Garmin Connect MCP Setup](https://agensi.io/skills/garmin-connect-mcp-setup-deploy-connect-verify). Para análisis de
 entrenador sobre estos datos, existe el skill
-[Garmin Run Coach](https://agensi.io/skills/garmin-run-coach-decoupling-real-weather-workouts) en Agensi.
+[Garmin Run Coach](https://agensi.io/skills/garmin-run-coach-decoupling-real-weather-workouts) en Agensi. Los dos juntos
+cuestan $8 en lugar de $10 en el pack
+[Garmin AI Running Kit: Setup & Coach](https://agensi.io/bundles/garmin-ai-running-kit-setup-coach).
 
 1. Pulsa **Deploy to Render**. Escribe tu correo y contraseña de Garmin (cuentas sin
    verificación en dos pasos) y tu desfase horario (Bogotá/Lima `-5`, Ciudad de México `-6`).
