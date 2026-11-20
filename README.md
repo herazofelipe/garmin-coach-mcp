@@ -2,7 +2,8 @@
 
 A remote MCP server that connects Claude (or any MCP client) to **your own** Garmin Connect
 account: activities, splits, HR and power zones, aerobic decoupling, HRV, sleep, stress,
-readiness, training status, gear, personal records, session weather — and it can create,
+readiness, training status, gear, personal records, session weather, skin temperature and
+menstrual-cycle context for planning training — and it can create,
 schedule and delete running, strength and swim workouts on your watch.
 
 It runs in the cloud, so it also works from the Claude mobile app.
@@ -55,14 +56,15 @@ calls and workouts that upload cleanly.
 `garmin_login_colab.ipynb` in Google Colab from your phone. Paste the printed value into
 `GARMIN_TOKENS` in Render. Treat it like a password.
 
-## Tools (41)
+## Tools (44)
 
 | Group | Tools |
 |---|---|
 | Activities | list, by date, last, full analysis (summary, splits, typed splits, zones, optional weather), compare, progress summary, personal records |
 | Derived metrics | aerobic decoupling Pa:HR / Pw:HR on the active block, cardiac drift, HR recovery, HR curve |
 | Daily physiology | morning check, HRV (+detail), sleep, stress, Body Battery events, daily summary, altitude vitals, body composition, hydration |
-| Trends | `garmin_get_trend` for HRV, sleep, resting HR, stress, VO2max, SpO2, respiration (31 days) or Body Battery, intensity minutes, hill and endurance score (366 days); readiness range |
+| Cycle & skin temperature | nightly skin-temperature deviation with biphasic shift detection, Garmin menstrual-cycle day/phase, `garmin_cycle_insights` (phase, ovulation and fertile-window estimates, evidence-based training considerations) |
+| Trends | `garmin_get_trend` for HRV, sleep, resting HR, stress, VO2max, SpO2, respiration, skin temperature (31 days) or Body Battery, intensity minutes, hill and endurance score (366 days); readiness range |
 | Intraday | heart rate and stress for a time window |
 | Status | training status (load, ACWR, load balance, acclimation, race predictions), calibration (LTHR, threshold pace/power, VO2max) |
 | Strength & swim | session detail, exercise search and validation |
@@ -71,6 +73,15 @@ calls and workouts that upload cleanly.
 **Session weather** (`include_weather=true` in the activity analysis): Garmin uses its nearest
 weather station, which can be tens of km away. The server also queries Open-Meteo at the run's
 GPS point for the hours nearest start and end, and warns when Garmin's station is > 15 km away.
+
+**Cycle and skin temperature.** Skin temperature needs a watch with Garmin's Elevate Gen 5
+sensor (fēnix 7 Pro/8, epix Pro, Venu 3/4, Venu X1, Forerunner 570/970); the Forerunner 965/265
+don't have it. Cycle data needs cycle tracking turned on in Garmin Connect. The server reads
+both, detects the post-ovulation temperature shift (3-over-6 rule) and returns training
+considerations with references (symptoms first, heat tolerance and HRV in the luteal phase). The
+morning check and the calibration add a short cycle block only when the account tracks it.
+Ovulation and fertile-window outputs are wellness estimates: **not a medical device and not a
+contraceptive method.** Sexual-activity entries and free-text notes are never returned.
 
 Tool descriptions are in Spanish; Claude answers in your language anyway.
 
@@ -117,6 +128,11 @@ entrenador sobre estos datos, existe el skill
    `<tu-servicio>` por la dirección de tu servicio. Esa URL es tu llave: no la compartas.
 3. En claude.ai (web) → Ajustes → Conectores → *Agregar conector personalizado* → pega la URL.
 4. Opcional: un monitor gratis de UptimeRobot a `.../health` cada 5 minutos para que no se duerma.
+
+Incluye temperatura de la piel (relojes con sensor Elevate Gen 5; no el Forerunner 965/265) y
+ciclo menstrual (si está activado en Garmin Connect) para organizar entrenamientos por fase y
+síntomas. Las estimaciones de ovulación y ventana fértil son orientativas: no es un dispositivo
+médico ni un método anticonceptivo.
 
 Si tu cuenta usa verificación en dos pasos, genera `GARMIN_TOKENS` con
 `garmin_login_colab.ipynb` (Google Colab, funciona desde el celular).

@@ -12,6 +12,8 @@ Un solo archivo de código + garmin_exercise_catalog.json. Secciones, en orden:
   5. Herramientas de escritura: crear entrenamientos de carrera, fuerza y natación.
   6. Gestión: borrar entrenamientos, buscar/validar ejercicios.
   7. Equipo, récords, tendencias (garmin_get_trend) y eventos de Body Battery.
+  7b. Temperatura de la piel y ciclo menstrual (fase, ovulación, ventana fértil,
+      consideraciones de entrenamiento).
   8. Calendario: ver, agendar y desagendar.
   9. /health (keep-alive) y arranque.
 
@@ -113,7 +115,14 @@ mcp = FastMCP(
         "Para trayectorias de varios días (HRV, FC en reposo, sueño, estrés, VO2max, "
         "SpO2, Body Battery, minutos de intensidad) usa garmin_get_trend en vez de "
         "llamar una herramienta diaria repetidas veces. Para MOVER una sesión agendada usa "
-        "garmin_unschedule_workout + garmin_schedule_workout (no borres ni recrees la plantilla)."
+        "garmin_unschedule_workout + garmin_schedule_workout (no borres ni recrees la plantilla).\n\n"
+        "CICLO MENSTRUAL: si la usuaria registra su ciclo en Garmin Connect o su reloj mide "
+        "temperatura de la piel, llama a garmin_cycle_insights al planificar la semana o antes "
+        "de crear entrenamientos, y aplica sus training_considerations: ajustar por síntomas y "
+        "respuesta individual (no reprogramar por calendario), más cuidado con el calor en la "
+        "fase lútea y leer HRV/FC en reposo frente a la misma fase de ciclos previos. Las "
+        "predicciones de ovulación y ventana fértil son orientativas: nunca las presentes como "
+        "método anticonceptivo ni como diagnóstico."
     ),
 )
 
@@ -841,7 +850,8 @@ def garmin_morning_check(date: Optional[str] = None) -> dict:
         date: Fecha ISO 'YYYY-MM-DD'. Por defecto hoy.
 
     Returns:
-        dict: {"date", "training_readiness", "hrv", "resting_hr", "sleep", "body_battery"}.
+        dict: {"date", "training_readiness", "hrv", "resting_hr", "sleep", "body_battery",
+               "skin_temp" (solo relojes con sensor), "cycle" (solo si registra su ciclo)}.
               Cada bloque puede ser null si Garmin aún no lo calculó.
     """
     cdate = _d(date)
@@ -869,7 +879,12 @@ def garmin_morning_check(date: Optional[str] = None) -> dict:
         return {"resting_hr": m[0].get("value") if m else r.get("restingHeartRate")}
 
     def _sleep():
-        s = (_call("get_sleep_data", cdate) or {}).get("dailySleepDTO", {}) or {}
+        data = _call("get_sleep_data", cdate) or {}
+        skin = _skin_from_sleep(data)
+        if skin["deviation_c"] is not None:
+            out["skin_temp"] = {"deviation_c": skin["deviation_c"],
+                                "calibration_days": skin["calibration_days"]}
+        s = data.get("dailySleepDTO", {}) or {}
         return {
             "sleep_score": (s.get("sleepScores") or {}).get("overall", {}).get("value"),
             "duration_h": round(s.get("sleepTimeSeconds", 0) / 3600.0, 1)
@@ -895,6 +910,9 @@ def garmin_morning_check(date: Optional[str] = None) -> dict:
     _sub("resting_hr", _rhr)
     _sub("sleep", _sleep)
     _sub("body_battery", _bb)
+    _sub("cycle", lambda: _cycle_brief(cdate))
+    if out.get("cycle") is None and "cycle" not in out["_notes"]:
+        out.pop("cycle", None)
 
     if not out["_notes"]:
         out.pop("_notes")
@@ -1043,6 +1061,7 @@ def garmin_get_sleep(date: Optional[str] = None) -> dict:
             "resting_hr": data.get("restingHeartRate"),
             "avg_respiration": data.get("avgSleepRespirationValue"),
             "body_battery_change": data.get("bodyBatteryChange"),
+            "skin_temp_deviation_c": _skin_from_sleep(data)["deviation_c"],
         }
     except Exception as e:  # noqa: BLE001
         return _err(e)
@@ -1713,7 +1732,8 @@ def garmin_get_training_calibration(date: Optional[str] = None) -> dict:
 
     Returns:
         dict: {"date", "lactate_threshold", "vo2max", "training_status",
-               "race_predictions", "readiness_today"}.
+               "race_predictions", "readiness_today", "cycle_context" (solo si la
+               usuaria registra su ciclo: fase y consideraciones de entrenamiento)}.
     """
     cdate = _d(date)
     out: dict[str, Any] = {"date": cdate, "_notes": {}}
@@ -1763,6 +1783,17 @@ def garmin_get_training_calibration(date: Optional[str] = None) -> dict:
     _sub("training_status", lambda: _slim_training_status(_call("get_training_status", cdate)))
     _sub("race_predictions", lambda: _fmt_race_predictions(_call("get_race_predictions")))
     _sub("readiness_today", _readiness)
+
+    def _cycle_ctx():
+        b = _cycle_brief(cdate)
+        if not b:
+            return None
+        return {**b, "training_considerations": _training_notes(
+            b.get("phase"), b.get("cycle_type"), False, None, False),
+            "more": "garmin_cycle_insights para ventana fértil, temperatura y detalle."}
+    _sub("cycle_context", _cycle_ctx)
+    if out.get("cycle_context") is None and "cycle_context" not in out["_notes"]:
+        out.pop("cycle_context", None)
 
     if not out["_notes"]:
         out.pop("_notes")
@@ -2790,9 +2821,14 @@ def _day_resp(call, iso):
             "avg_sleep": r.get("avgSleepRespirationValue")}
 
 
+def _day_skin(call, iso):
+    s = _skin_from_sleep(call("get_sleep_data", iso))
+    return {"deviation_c": s["deviation_c"], "calibration_days": s["calibration_days"]}
+
+
 _DAILY = {"hrv": _day_hrv, "sleep": _day_sleep, "resting_hr": _day_rhr,
           "stress": _day_stress, "vo2max": _day_vo2, "spo2": _day_spo2,
-          "respiration": _day_resp}
+          "respiration": _day_resp, "skin_temp": _day_skin}
 _RANGED = ("body_battery", "intensity_minutes", "hill_score", "endurance_score")
 METRICS = tuple(_DAILY) + _RANGED
 
@@ -2811,7 +2847,8 @@ def _summary(days: list[dict], key: str) -> Optional[dict]:
 
 _SUMMARY_KEY = {"hrv": "last_night_avg", "sleep": "score", "resting_hr": "resting_hr",
                 "stress": "avg", "vo2max": "vo2max_running", "spo2": "avg",
-                "respiration": "avg_sleep", "body_battery": "max"}
+                "respiration": "avg_sleep", "body_battery": "max",
+                "skin_temp": "deviation_c"}
 
 
 _PK_CACHE: dict[str, Any] = {}
@@ -2971,12 +3008,13 @@ def garmin_get_trend(metric: str, start_date: str, end_date: Optional[str] = Non
 
     Args:
         metric: hrv | sleep | resting_hr | stress | vo2max | spo2 | respiration |
-                body_battery | intensity_minutes | hill_score | endurance_score.
+                skin_temp | body_battery | intensity_minutes | hill_score |
+                endurance_score.
         start_date: Fecha inicial ISO 'YYYY-MM-DD'.
         end_date: Fecha final ISO 'YYYY-MM-DD'. Por defecto hoy.
 
     Límites: las métricas diarias (hrv, sleep, resting_hr, stress, vo2max, spo2,
-    respiration) hacen 1 llamada por día → máx. 31 días. body_battery,
+    respiration, skin_temp) hacen 1 llamada por día → máx. 31 días. body_battery,
     intensity_minutes (semanal), hill_score y endurance_score van en una sola
     llamada → hasta 366 días.
     """
@@ -3187,6 +3225,601 @@ def garmin_unschedule_workout(scheduled_id: str) -> dict:
         return {"ok": True, "scheduled_id": str(scheduled_id)}
     except Exception as e:  # noqa: BLE001
         return _err(e)
+
+
+# --------------------------------------------------------------------------- #
+# Herramientas — temperatura de la piel y ciclo menstrual (LECTURA)
+# --------------------------------------------------------------------------- #
+# Temperatura de la piel: Garmin la mide durante el sueño solo en relojes con sensor
+# Elevate Gen 5 (fēnix 7 Pro y 8, epix Pro, Venu 3/4, Venu X1, Forerunner 570/970...).
+# Los Forerunner 965/265 no la tienen. No es una temperatura absoluta: es la
+# desviación de cada noche frente a la línea base personal (3 noches para empezar,
+# ~20 noches de referencia). Llega en la raíz de la respuesta de sueño:
+# skinTempDataExists, avgSkinTempDeviationC/F, skinTempCalibrationDays.
+# Ciclo menstrual: /periodichealth-service/menstrualcycle/* (no documentado). Se lee
+# a la defensiva y se devuelven los nombres de campo vistos para poder ajustarlo.
+# Por privacidad NO se devuelven actividad sexual, deseo sexual ni notas libres.
+
+SKIN_MAX_DAYS = 62
+CYCLE_CAL_MAX_DAYS = 90          # Garmin rechaza ventanas de 92 días o más
+_CYCLE_PATH = "/periodichealth-service/menstrualcycle"
+CYCLE_DISCLAIMER = (
+    "Estimaciones de bienestar para organizar el entrenamiento: no es un dispositivo "
+    "médico ni un método anticonceptivo. No las uses para evitar ni para buscar un "
+    "embarazo; para eso existen métodos validados.")
+CYCLE_REFERENCES = [
+    "McNulty KL et al. Sports Med 2020;50:1813-27. doi:10.1007/s40279-020-01319-3",
+    "Colenso-Semple LM et al. Front Sports Act Living 2023;5:1054542. "
+    "doi:10.3389/fspor.2023.1054542",
+    "Giersch GEW et al. J Sci Med Sport 2020;23:1134-40. doi:10.1016/j.jsams.2020.05.014",
+    "Schmalenberger KM et al. J Clin Med 2020;9:617. doi:10.3390/jcm9030617",
+    "Shilaih M et al. Biosci Rep 2018;38:BSR20171279. doi:10.1042/BSR20171279",
+    "Wilcox AJ et al. N Engl J Med 1995;333:1517-21. doi:10.1056/NEJM199512073332301",
+]
+_PRIVATE_LOG_KEYS = {"sexualactivity", "sexdrive", "notes", "note", "userprofilepk"}
+_CYCLE_STATE: dict[str, float] = {}   # {"off_until": epoch} si la cuenta no registra ciclo
+
+
+# ---------------------------------------------------------------- temperatura de piel
+def _skin_from_sleep(data: Any) -> dict:
+    """Desviación nocturna de temperatura de la piel a partir de get_sleep_data."""
+    data = data if isinstance(data, dict) else {}
+    dto = data.get("dailySleepDTO") or {}
+
+    def pick(k):
+        v = data.get(k)
+        return dto.get(k) if v is None else v
+
+    dev = pick("avgSkinTempDeviationC")
+    if not isinstance(dev, (int, float)):
+        f = pick("avgSkinTempDeviationF")
+        dev = f * 5.0 / 9.0 if isinstance(f, (int, float)) else None
+    return {"deviation_c": round(dev, 2) if dev is not None else None,
+            "calibration_days": pick("skinTempCalibrationDays"),
+            "data_exists": pick("skinTempDataExists")}
+
+
+def _skin_night(iso: str) -> Optional[dict]:
+    try:
+        s = _skin_from_sleep(_call("get_sleep_data", iso))
+    except Exception:  # noqa: BLE001 — noche sin dato
+        return None
+    if s["deviation_c"] is None:
+        return None
+    return {"date": iso, "deviation_c": s["deviation_c"],
+            "calibration_days": s["calibration_days"]}
+
+
+def _skin_series(d0: _date, d1: _date) -> dict:
+    """Noches con desviación de temperatura entre d0 y d1. Mira primero las 3 noches
+    más recientes: si ninguna trae dato asume reloj sin sensor y no pide más. El
+    resto se pide con 4 hilos (1 llamada por noche a Garmin)."""
+    from concurrent.futures import ThreadPoolExecutor
+
+    isos = [iso for iso in _days(d0, d1)]
+    recent, older = isos[-3:], isos[:-3]
+    got = [n for n in (_skin_night(i) for i in reversed(recent)) if n]
+    if not got:
+        return {"nights": [], "checked": len(recent), "supported": False}
+    if older:
+        with ThreadPoolExecutor(max_workers=4) as pool:
+            got += [n for n in pool.map(_skin_night, older) if n]
+    got.sort(key=lambda n: n["date"])
+    return {"nights": got, "checked": len(isos), "supported": True}
+
+
+def _temp_shifts(nights: list[dict]) -> list[dict]:
+    """Desplazamientos térmicos bifásicos con la regla '3 sobre 6' (Sensiplan),
+    adaptada a la desviación nocturna de la muñeca: 3 lecturas seguidas (en <= 4 días)
+    por encima de la más alta de las 6 previas (línea de cobertura) y la tercera al
+    menos 0,2 °C por encima. Marca el paso a la fase lútea; la ovulación suele ocurrir
+    el día anterior a la primera noche alta o ese mismo día (Shilaih 2018)."""
+    pts = [(n["date"], n["deviation_c"]) for n in nights
+           if isinstance(n.get("deviation_c"), (int, float))]
+    out, i = [], 6
+    while i <= len(pts) - 3:
+        prev = [v for _, v in pts[i - 6:i]]
+        cover = max(prev)
+        (d_a, a), (_, b), (d_c, c) = pts[i], pts[i + 1], pts[i + 2]
+        span = (_iso(d_c) - _iso(d_a)).days
+        if a > cover and b > cover and c >= cover + 0.2 and span <= 4:
+            first = _iso(d_a)
+            out.append({
+                "first_high_night": d_a,
+                "confirmed_on": d_c,
+                "coverline_c": round(cover, 2),
+                "rise_c": round((a + b + c) / 3 - sum(prev) / len(prev), 2),
+                "estimated_ovulation": (first - timedelta(days=1)).isoformat(),
+                "estimated_ovulation_range": [(first - timedelta(days=2)).isoformat(),
+                                              first.isoformat()],
+            })
+            i += 10            # un desplazamiento por ciclo
+        else:
+            i += 1
+    return out
+
+
+# ---------------------------------------------------------------- ciclo menstrual
+def _cycle_get(path: str, **params) -> Any:
+    """GET a periodichealth-service; None si Garmin responde vacío (204) o 404."""
+    kwargs = {"params": params} if params else {}
+    try:
+        return _call("connectapi", path, **kwargs)
+    except ValueError:            # cuerpo vacío (204) -> JSONDecodeError
+        return None
+    except GarminConnectAuthenticationError:
+        raise
+    except Exception as e:  # noqa: BLE001
+        if "404" in str(e) or "Not Found" in str(e):
+            return None
+        raise
+
+
+def _walk(obj: Any, depth: int = 0):
+    if depth > 6:
+        return
+    if isinstance(obj, dict):
+        for k, v in obj.items():
+            yield k, v
+            yield from _walk(v, depth + 1)
+    elif isinstance(obj, list):
+        for v in obj:
+            yield from _walk(v, depth + 1)
+
+
+def _first(obj: Any, *keys: str) -> Any:
+    want = {k.lower() for k in keys}
+    for k, v in _walk(obj):
+        if isinstance(k, str) and k.lower() in want and v not in (None, "", [], {}):
+            return v
+    return None
+
+
+def _keys_seen(*objs: Any, limit: int = 80) -> list[str]:
+    seen: set[str] = set()
+    for o in objs:
+        for k, _ in _walk(o):
+            if isinstance(k, str):
+                seen.add(k)
+    return sorted(seen)[:limit]
+
+
+def _as_date(v: Any) -> Optional[_date]:
+    if isinstance(v, str) and len(v) >= 10:
+        try:
+            return _date.fromisoformat(v[:10])
+        except ValueError:
+            return None
+    if isinstance(v, (int, float)) and v > 1e11:          # epoch en ms
+        return datetime.fromtimestamp(v / 1000, timezone.utc).date()
+    return None
+
+
+def _cycle_day_to_date(v: Any, start: Optional[_date]) -> Optional[str]:
+    """Convierte 'día del ciclo' (int, 1 = primer día de regla) o fecha a ISO."""
+    d = _as_date(v)
+    if d:
+        return d.isoformat()
+    if isinstance(v, int) and not isinstance(v, bool) and start and 0 < v < 120:
+        return (start + timedelta(days=v - 1)).isoformat()
+    return None
+
+
+_PHASE_MAP = (("menstru", "menstrual"), ("period", "menstrual"), ("bleed", "menstrual"),
+              ("follic", "folicular"), ("fertil", "ventana_fertil"),
+              ("ovul", "ovulacion"), ("lute", "lutea"), ("pregnan", "embarazo"))
+
+
+def _phase_key(raw: Any) -> Optional[str]:
+    if isinstance(raw, dict):
+        raw = _first(raw, "phaseType", "type", "name", "phase")
+    if not isinstance(raw, str):
+        return None
+    low = raw.lower()
+    for needle, key in _PHASE_MAP:
+        if needle in low:
+            return key
+    return None
+
+
+def _parse_cycle_summary(summary: Any, dayview: Any) -> dict:
+    src = {"summary": summary, "dayview": dayview}
+    start = _as_date(_first(src, "startDate", "cycleStartDate", "periodStartDate",
+                            "currentCycleStartDate", "cycleStartCalendarDate"))
+    phase_raw = _first(src, "currentPhase", "currentPhaseType", "phaseType", "phase")
+    if isinstance(phase_raw, dict):
+        phase_raw = _first(phase_raw, "phaseType", "type", "name")
+    out = {
+        "day_in_cycle": _first(src, "dayInCycle", "cycleDay", "currentDayInCycle"),
+        "phase_garmin": phase_raw,
+        "phase": _phase_key(phase_raw),
+        "days_until_next_phase": _first(src, "daysUntilNextPhase"),
+        "cycle_type": _first(src, "cycleType"),
+        "cycle_start": start.isoformat() if start else None,
+        "predicted_cycle_length": _first(src, "predictedCycleLength", "cycleLength",
+                                         "averageCycleLength"),
+        "period_length": _first(src, "periodLength", "predictedPeriodLength",
+                                "averagePeriodLength"),
+    }
+    fw = _first(src, "fertileWindowStart", "fertileWindowStartDate",
+                "fertileWindowStartDay", "predictedFertileWindowStart")
+    fw_len = _first(src, "lengthOfFertileWindow", "fertileWindowLength")
+    fw_start = _cycle_day_to_date(fw, start)
+    out["fertile_window_garmin"] = None
+    if fw_start:
+        end = None
+        if isinstance(fw_len, int) and not isinstance(fw_len, bool):
+            end = (_iso(fw_start) + timedelta(days=fw_len - 1)).isoformat()
+        out["fertile_window_garmin"] = {"start": fw_start, "end": end, "length_days": fw_len}
+    out["ovulation_garmin"] = _cycle_day_to_date(
+        _first(src, "ovulationDate", "predictedOvulationDate", "ovulationDay",
+               "estimatedOvulationDate"), start)
+    out["next_period_garmin"] = _cycle_day_to_date(
+        _first(src, "nextPeriodStartDate", "predictedNextPeriodStartDate",
+               "nextPredictedPeriodStartDate", "predictedPeriodStartDate"), start)
+    log = _first(dayview, "dayLog") if dayview else None
+    if isinstance(log, dict):
+        out["day_log"] = {k: v for k, v in log.items()
+                          if k.lower() not in _PRIVATE_LOG_KEYS
+                          and k.lower() in {"flow", "symptoms", "moods", "discharge",
+                                            "ovulationday", "calendardate"}
+                          and v not in (None, [], "")} or None
+    return out
+
+
+def _cycle_starts(calendar: Any, today: Optional[_date] = None) -> list[dict]:
+    """Ciclos (inicio, duración, regla, si es predicción) en la respuesta del
+    calendario, sea cual sea su anidación. Los que empiezan después de hoy se marcan
+    como predicción."""
+    found: dict[str, dict] = {}
+
+    def visit(o, depth=0):
+        if depth > 6:
+            return
+        if isinstance(o, dict):
+            st = None
+            for k in ("startDate", "cycleStartDate", "periodStartDate"):
+                st = _as_date(o.get(k))
+                if st:
+                    break
+            if st:
+                pred = o.get("isPredicted", o.get("predicted", o.get("isPredictedCycle")))
+                rec = found.setdefault(st.isoformat(), {"start": st.isoformat()})
+                for src_k, dst in (("cycleLength", "cycle_length"),
+                                   ("actualCycleLength", "cycle_length"),
+                                   ("periodLength", "period_length"),
+                                   ("actualPeriodLength", "period_length")):
+                    if isinstance(o.get(src_k), int) and dst not in rec:
+                        rec[dst] = o[src_k]
+                if pred is not None:
+                    rec["predicted"] = bool(pred)
+            for v in o.values():
+                visit(v, depth + 1)
+        elif isinstance(o, list):
+            for v in o:
+                visit(v, depth + 1)
+
+    visit(calendar)
+    cycles = sorted(found.values(), key=lambda c: c["start"])
+    if today:
+        for c in cycles:
+            if _iso(c["start"]) > today:
+                c["predicted"] = True
+    for a, b in zip(cycles, cycles[1:]):         # duración real entre inicios confirmados
+        if not a.get("predicted") and not b.get("predicted") and "cycle_length" not in a:
+            a["cycle_length"] = (_iso(b["start"]) - _iso(a["start"])).days
+    return cycles
+
+
+def _cycle_brief(cdate: str) -> Optional[dict]:
+    """Fase y día del ciclo para chequeos rápidos (morning_check, calibración).
+    None si la cuenta no registra ciclo; se recuerda 6 h para no repetir llamadas."""
+    now = datetime.now(timezone.utc).timestamp()
+    if _CYCLE_STATE.get("off_until", 0) > now:
+        return None
+    summary = _cycle_get(f"{_CYCLE_PATH}/summary/{cdate}")
+    parsed = _parse_cycle_summary(summary, None) if summary else {}
+    if not parsed or (parsed.get("day_in_cycle") is None and not parsed.get("phase_garmin")):
+        _CYCLE_STATE["off_until"] = now + 6 * 3600
+        return None
+    return {k: parsed.get(k) for k in ("day_in_cycle", "phase", "phase_garmin",
+                                       "days_until_next_phase", "cycle_type",
+                                       "fertile_window_garmin", "next_period_garmin")}
+
+
+def _training_notes(phase: Optional[str], cycle_type: Any, late_luteal: bool,
+                    symptoms: Optional[list], temp_luteal: bool) -> list[str]:
+    ctype = str(cycle_type or "").upper()
+    if "PREGNAN" in ctype or phase == "embarazo":
+        return ["Embarazo registrado: la carga de entrenamiento debe seguir las "
+                "indicaciones de su obstetra; no se aplican reglas por fase."]
+    notes = ["En promedio, el efecto de la fase sobre el rendimiento es trivial y muy "
+             "variable (McNulty 2020) y no se ha demostrado sobre fuerza ni hipertrofia "
+             "(Colenso-Semple 2023): no reprogramar por calendario; ajustar por síntomas, "
+             "readiness y la respuesta propia de cada ciclo."]
+    if symptoms:
+        notes.append("Síntomas registrados hoy (" + ", ".join(map(str, symptoms)) + "): "
+                     "si molestan, cambiar la sesión clave por rodaje suave o moverla 1–2 "
+                     "días; el volumen aeróbico suave suele tolerarse bien.")
+    if any(t in ctype for t in ("HORMON", "CONTRACEP", "BIRTH")):
+        notes.append("Anticoncepción hormonal: no hay fases ováricas naturales; usa "
+                     "readiness/HRV como siempre. La semana de descanso puede traer "
+                     "sangrado y síntomas: ajusta por cómo se siente.")
+        return notes
+    if phase == "menstrual":
+        if not symptoms:
+            notes.append("Fase menstrual sin síntomas registrados: entrenar según lo "
+                         "previsto.")
+        notes.append("Si el sangrado es abundante en cada ciclo, conviene revisar el "
+                     "hierro con su médico.")
+    elif phase in ("folicular", "ventana_fertil", "ovulacion"):
+        notes.append("Fase folicular/periovulatoria: sin restricción específica; buen "
+                     "momento para sesiones clave si se siente bien (respuesta individual).")
+    if phase == "lutea" or temp_luteal:
+        notes.append("Fase lútea: temperatura central ~0,3–0,5 °C más alta y peor tolerancia "
+                     "al calor (Giersch 2020). Con calor o humedad, controla por FC/RPE y no "
+                     "por ritmo, hidrata más y evita la calidad en las horas de más calor.")
+        notes.append("HRV más baja y FC en reposo más alta son esperables en la fase lútea "
+                     "(Schmalenberger 2020): compáralas con la fase lútea de ciclos previos "
+                     "antes de leerlas como fatiga o mala recuperación.")
+    if late_luteal:
+        notes.append("Fase lútea tardía (últimos ~5 días antes de la regla): si aparecen "
+                     "síntomas premenstruales, deja flexible el día de la sesión de calidad.")
+    return notes
+
+
+_RO_CYCLE = {"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True,
+             "openWorldHint": True}
+
+
+@mcp.tool(name="garmin_get_skin_temperature",
+          annotations={"title": "Temperatura de la piel (noches)", **_RO_CYCLE})
+def garmin_get_skin_temperature(start_date: Optional[str] = None,
+                                end_date: Optional[str] = None) -> dict:
+    """Desviación nocturna de la temperatura de la piel frente a la línea base personal
+    (°C), noche a noche, con resumen y detección del desplazamiento térmico bifásico
+    (regla 3 sobre 6) que suele marcar el paso a la fase lútea.
+
+    Solo relojes con sensor Elevate Gen 5 (fēnix 7 Pro/8, epix Pro, Venu 3/4, Venu X1,
+    Forerunner 570/970...). Los Forerunner 965/265 no miden temperatura de la piel.
+    Una desviación alta aislada (≈ +1 °C o más) también puede deberse a enfermedad,
+    alcohol o un dormitorio caluroso.
+
+    Args:
+        start_date: Fecha inicial ISO. Por defecto 35 días antes de end_date.
+        end_date: Fecha final ISO. Por defecto hoy.
+
+    Límite: 62 noches (1 llamada por noche).
+    """
+    try:
+        d1 = _iso(_d(end_date))
+        d0 = _iso(start_date) if start_date else d1 - timedelta(days=34)
+        if d0 > d1:
+            return {"error": "start_date no puede ser posterior a end_date."}
+        if (d1 - d0).days + 1 > SKIN_MAX_DAYS:
+            return {"error": f"Rango demasiado amplio (máx. {SKIN_MAX_DAYS} noches)."}
+        s = _skin_series(d0, d1)
+        out: dict[str, Any] = {"start": d0.isoformat(), "end": d1.isoformat(),
+                               "unit": "°C de desviación frente a la línea base",
+                               "supported": s["supported"], "count": len(s["nights"]),
+                               "nights": s["nights"]}
+        if not s["supported"]:
+            out["note"] = ("Sin datos de temperatura de la piel en las últimas noches: el "
+                           "reloj no tiene el sensor (p. ej. Forerunner 965/265) o no se "
+                           "usó para dormir.")
+            return out
+        vals = [n["deviation_c"] for n in s["nights"]]
+        out["summary"] = {"mean": round(sum(vals) / len(vals), 2), "min": min(vals),
+                          "max": max(vals), "last": vals[-1]}
+        out["temperature_shifts"] = _temp_shifts(s["nights"])
+        if vals[-1] >= 1.0:
+            out["alert"] = ("Última noche ≥ +1 °C sobre la línea base: descarta fiebre o "
+                            "enfermedad antes de una sesión intensa.")
+        return out
+    except Exception as e:  # noqa: BLE001
+        return _err(e)
+
+
+@mcp.tool(name="garmin_get_menstrual_cycle",
+          annotations={"title": "Ciclo menstrual (día)", **_RO_CYCLE})
+def garmin_get_menstrual_cycle(date: Optional[str] = None) -> dict:
+    """Lo que Garmin Connect registra del ciclo menstrual para un día: día del ciclo,
+    fase, días hasta la siguiente fase, tipo de ciclo, ventana fértil y próxima regla
+    previstas por Garmin, y el registro del día (flujo, síntomas, ánimo, flujo vaginal).
+    No devuelve actividad sexual ni notas libres.
+
+    Requiere tener activado el seguimiento del ciclo en Garmin Connect.
+
+    Args:
+        date: Fecha ISO 'YYYY-MM-DD'. Por defecto hoy.
+    """
+    cdate = _d(date)
+    try:
+        summary = _cycle_get(f"{_CYCLE_PATH}/summary/{cdate}")
+        dayview = _cycle_get(f"{_CYCLE_PATH}/dayview/{cdate}", todayDate=_today())
+        if not summary and not dayview:
+            return {"date": cdate, "tracking": False,
+                    "note": "Garmin no devuelve datos de ciclo: activa el seguimiento del "
+                            "ciclo menstrual en Garmin Connect (Salud de la mujer)."}
+        parsed = _parse_cycle_summary(summary, dayview)
+        return {"date": cdate, "tracking": True, **parsed,
+                "garmin_fields_seen": _keys_seen(summary, dayview),
+                "disclaimer": CYCLE_DISCLAIMER}
+    except Exception as e:  # noqa: BLE001
+        return _err(e)
+
+
+@mcp.tool(name="garmin_cycle_insights",
+          annotations={"title": "Ciclo, ovulación y entrenamiento", **_RO_CYCLE})
+def garmin_cycle_insights(date: Optional[str] = None, lookback_days: int = 60) -> dict:
+    """Integra ciclo menstrual y temperatura de la piel para PLANIFICAR ENTRENAMIENTOS:
+    fase actual, predicción de ovulación y ventana fértil (la de Garmin, una estimación
+    propia por calendario con la duración media de los ciclos y, si el reloj mide
+    temperatura de la piel, la confirmación retrospectiva por desplazamiento térmico)
+    y consideraciones de entrenamiento basadas en evidencia, con referencias.
+
+    Úsala antes de planificar la semana o de crear entrenamientos de una usuaria que
+    registra su ciclo. No es un método anticonceptivo ni un dispositivo médico.
+
+    Args:
+        date: Fecha ISO 'YYYY-MM-DD'. Por defecto hoy.
+        lookback_days: Días hacia atrás para historial de ciclos (30–90) y noches de
+            temperatura (hasta 45). Por defecto 60.
+    """
+    cdate = _d(date)
+    today = _iso(cdate)
+    look = max(30, min(int(lookback_days or 60), CYCLE_CAL_MAX_DAYS))
+    out: dict[str, Any] = {"date": cdate, "_notes": {}}
+    try:
+        summary = _cycle_get(f"{_CYCLE_PATH}/summary/{cdate}")
+        dayview = _cycle_get(f"{_CYCLE_PATH}/dayview/{cdate}", todayDate=_today())
+    except Exception as e:  # noqa: BLE001
+        return _err(e)
+    cur = _parse_cycle_summary(summary, dayview) if (summary or dayview) else {}
+    tracking = bool(cur.get("day_in_cycle") or cur.get("phase_garmin")
+                    or cur.get("cycle_start"))
+
+    cycles: list[dict] = []
+    if tracking:
+        try:
+            cal = _cycle_get(f"{_CYCLE_PATH}/calendar/"
+                             f"{(today - timedelta(days=look - 1)).isoformat()}/{cdate}")
+            cycles = _cycle_starts(cal, today)
+        except Exception as e:  # noqa: BLE001
+            out["_notes"]["calendar"] = f"{type(e).__name__}: {e}"
+
+    skin = {"nights": [], "supported": False}
+    try:
+        skin = _skin_series(today - timedelta(days=min(look, 45) - 1), today)
+    except Exception as e:  # noqa: BLE001
+        out["_notes"]["skin_temperature"] = f"{type(e).__name__}: {e}"
+    shifts = _temp_shifts(skin["nights"]) if skin["supported"] else []
+
+    if not tracking and not skin["supported"]:
+        return {"date": cdate, "tracking": False, "skin_temperature_supported": False,
+                "note": "Sin seguimiento del ciclo en Garmin Connect y sin temperatura de "
+                        "la piel: no hay datos para estimar fases. Actívalo en Garmin "
+                        "Connect (Salud de la mujer) si aplica."}
+
+    # Inicio del ciclo actual y duraciones confirmadas.
+    start = _as_date(cur.get("cycle_start"))
+    if not start and isinstance(cur.get("day_in_cycle"), int):
+        start = today - timedelta(days=cur["day_in_cycle"] - 1)
+    if not start:
+        past = [c for c in cycles if not c.get("predicted") and _iso(c["start"]) <= today]
+        start = _iso(past[-1]["start"]) if past else None
+    lengths = [c["cycle_length"] for c in cycles
+               if not c.get("predicted") and isinstance(c.get("cycle_length"), int)
+               and 18 <= c["cycle_length"] <= 60][-6:]
+    pred_len = cur.get("predicted_cycle_length")
+    avg_len = round(sum(lengths) / len(lengths)) if lengths else (
+        pred_len if isinstance(pred_len, int) else None)
+    day = (today - start).days + 1 if start else cur.get("day_in_cycle")
+
+    # Fase lútea personal: de la primera noche alta al siguiente inicio de regla.
+    luteal_obs = []
+    for s in shifts:
+        nxt = [c for c in cycles if not c.get("predicted")
+               and _iso(c["start"]) > _iso(s["first_high_night"])]
+        if nxt:
+            n = (_iso(nxt[0]["start"]) - _iso(s["estimated_ovulation"])).days - 1
+            if 9 <= n <= 18:
+                luteal_obs.append(n)
+    luteal = round(sum(luteal_obs) / len(luteal_obs)) if luteal_obs else 14
+
+    ctype = str(cur.get("cycle_type") or "").upper()
+    no_ovulation = any(t in ctype for t in ("HORMON", "CONTRACEP", "BIRTH", "PREGNAN"))
+    estimate = None
+    if start and avg_len and not no_ovulation:
+        lo = min(lengths) if lengths else avg_len
+        hi = max(lengths) if lengths else avg_len
+        ov = start + timedelta(days=avg_len - luteal - 1)   # 28 d y lútea 14 -> día 14
+        estimate = {
+            "method": f"calendario: duración media {avg_len} d"
+                      + (f" (rango {lo}–{hi}, {len(lengths)} ciclos)" if lengths else
+                         " (predicción de Garmin)")
+                      + f"; fase lútea {luteal} d "
+                      + ("personal (temperatura)" if luteal_obs else "estándar"),
+            "next_period": (start + timedelta(days=avg_len)).isoformat(),
+            "ovulation": ov.isoformat(),
+            "fertile_window": {
+                "start": (start + timedelta(days=lo - luteal - 6)).isoformat(),
+                "end": (start + timedelta(days=hi - luteal - 1)).isoformat(),
+                "basis": "6 días que terminan el día de ovulación (Wilcox 1995), "
+                         "ampliados por la variabilidad de tus ciclos"},
+        }
+
+    this_shift = None
+    if shifts:
+        if start:
+            cand = [s for s in shifts if _iso(s["first_high_night"]) > start]
+        else:   # sin fecha de regla: solo un desplazamiento reciente (<= 16 noches)
+            cand = [s for s in shifts if (today - _iso(s["first_high_night"])).days <= 16]
+        this_shift = cand[-1] if cand else None
+
+    # Fase final: la temperatura (medida) manda sobre el calendario (Garmin o propio).
+    phase = cur.get("phase")
+    phase_note = None
+    if this_shift and phase in (None, "folicular", "ventana_fertil", "ovulacion"):
+        if phase:
+            phase_note = (f"Garmin indica '{cur.get('phase_garmin')}', pero la temperatura "
+                          f"ya confirmó el paso a fase lútea desde "
+                          f"{this_shift['first_high_night']}.")
+        phase = "lutea"
+    if not phase and day and estimate:
+        per = cur.get("period_length") if isinstance(cur.get("period_length"), int) else 5
+        fw0, fw1 = (_iso(estimate["fertile_window"]["start"]),
+                    _iso(estimate["fertile_window"]["end"]))
+        phase = ("menstrual" if day <= per else "folicular" if today < fw0
+                 else "ventana_fertil" if today <= fw1 else "lutea")
+    next_period = cur.get("next_period_garmin") or (estimate or {}).get("next_period")
+    days_to_period = (_iso(next_period) - today).days if next_period else None
+    late_luteal = phase == "lutea" and days_to_period is not None and 0 <= days_to_period <= 5
+    symptoms = ((cur.get("day_log") or {}).get("symptoms") or None)
+
+    out.update({
+        "tracking": tracking,
+        "cycle_type": cur.get("cycle_type"),
+        "cycle_start": start.isoformat() if start else None,
+        "day_in_cycle": day,
+        "phase": phase,
+        "phase_source": ("temperatura" if this_shift and phase == "lutea"
+                         and (phase_note or not cur.get("phase")) else
+                         "garmin" if cur.get("phase") else
+                         "calendario" if phase else None),
+        "phase_note": phase_note,
+        "late_luteal": late_luteal,
+        "days_to_next_period": days_to_period,
+        "garmin_prediction": {"fertile_window": cur.get("fertile_window_garmin"),
+                              "ovulation": cur.get("ovulation_garmin"),
+                              "next_period": cur.get("next_period_garmin"),
+                              "days_until_next_phase": cur.get("days_until_next_phase")}
+        if tracking else None,
+        "calendar_estimate": estimate if estimate else (
+            {"note": "Sin estimación de ovulación: con anticoncepción hormonal o embarazo "
+                     "no hay ciclo ovulatorio natural."} if no_ovulation else None),
+        "past_cycles": [c for c in cycles if not c.get("predicted")][-6:],
+        "skin_temperature": {
+            "supported": skin["supported"],
+            "last_night_c": skin["nights"][-1]["deviation_c"] if skin["nights"] else None,
+            "shift_this_cycle": this_shift,
+            "ovulation_confirmed": bool(this_shift),
+            "note": ("La temperatura confirma la ovulación a posteriori (tras 3 noches "
+                     "altas); no la anticipa.") if skin["supported"] else
+                    "El reloj no registra temperatura de la piel (p. ej. Forerunner 965).",
+        },
+        "day_log": cur.get("day_log"),
+        "training_considerations": _training_notes(phase, cur.get("cycle_type"),
+                                                   late_luteal, symptoms,
+                                                   bool(this_shift)),
+        "disclaimer": CYCLE_DISCLAIMER,
+        "references": CYCLE_REFERENCES,
+    })
+    if tracking and not cur.get("phase") and not cur.get("fertile_window_garmin"):
+        out["garmin_fields_seen"] = _keys_seen(summary, dayview)
+    if not out["_notes"]:
+        out.pop("_notes")
+    return out
 
 
 # --------------------------------------------------------------------------- #
