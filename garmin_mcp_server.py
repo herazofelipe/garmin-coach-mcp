@@ -455,6 +455,84 @@ def _primary(dto_map: Optional[dict]) -> dict:
     return vals[0] if vals else {}
 
 
+def _latest_vo2max(cdate: str, days_back: int = 30) -> dict:
+    """VO2max de carrera más reciente hasta cdate. Garmin solo lo guarda los días en que
+    lo recalcula (tras carreras con GPS), así que se busca hacia atrás en un rango."""
+    d1 = _iso(cdate)
+    d0 = d1 - timedelta(days=days_back)
+    try:
+        raw = _call("get_max_metrics_range", d0.isoformat(), d1.isoformat())
+        rows = _rows_by_date(raw)
+        for iso in sorted(rows, reverse=True):
+            v = _rfirst(rows[iso], "vo2MaxPreciseValue", "vo2MaxValue")
+            if isinstance(v, (int, float)):
+                return {"vo2max_running": v, "as_of": iso}
+    except Exception:  # noqa: BLE001 — sin método de rango: día a día (3 días)
+        pass
+    for back in range(0, 4):
+        iso = (d1 - timedelta(days=back)).isoformat()
+        try:
+            m = _call("get_max_metrics", iso)
+        except Exception:  # noqa: BLE001
+            continue
+        rec = m[0] if isinstance(m, list) and m else m
+        g = (rec or {}).get("generic") or {} if isinstance(rec, dict) else {}
+        v = g.get("vo2MaxPreciseValue") or g.get("vo2MaxValue")
+        if v:
+            return {"vo2max_running": v, "as_of": iso}
+    return {"vo2max_running": None}
+
+
+def _lt_compact() -> dict:
+    """Umbral de lactato vigente (FC, ritmo, potencia) en formato legible."""
+    lt = _call("get_lactate_threshold", latest=True) or {}
+    shr = lt.get("speed_and_heart_rate") or {}
+    pw = lt.get("power") or {}
+    return {
+        "threshold_hr_bpm": shr.get("heartRate"),
+        "threshold_pace_min_km": _lthr_pace(shr.get("speed")),
+        "measured_on": (shr.get("calendarDate") or "")[:10] or None,
+        "functional_threshold_power_w": pw.get("functionalThresholdPower"),
+        "power_to_weight": round(pw["powerToWeight"], 2) if pw.get("powerToWeight") else None,
+        "weight_kg": pw.get("weight"),
+    }
+
+
+_ENDURANCE_LEVELS = (("elite", "classificationLowerLimitElite"),
+                     ("superior", "classificationLowerLimitSuperior"),
+                     ("experto", "classificationLowerLimitExpert"),
+                     ("muy entrenado", "classificationLowerLimitWellTrained"),
+                     ("entrenado", "classificationLowerLimitTrained"),
+                     ("intermedio", "classificationLowerLimitIntermediate"))
+
+
+def _endurance_level(dto: dict) -> dict:
+    """Nivel de endurance score según los umbrales que manda Garmin con el dato."""
+    sc = dto.get("overallScore")
+    if not isinstance(sc, (int, float)):
+        return {"score": None}
+    label = next((name for name, k in _ENDURANCE_LEVELS
+                  if isinstance(dto.get(k), (int, float)) and sc >= dto[k]), "recreativo")
+    nxt = next((dto[k] for _, k in reversed(_ENDURANCE_LEVELS)
+                if isinstance(dto.get(k), (int, float)) and dto[k] > sc), None)
+    return {"date": dto.get("calendarDate"), "score": sc, "level": label,
+            "next_level_at": nxt}
+
+
+def _stress_pcts(s: dict) -> dict:
+    """% del tiempo medido en cada zona de estrés de Garmin (0-25 reposo, 26-50 bajo,
+    51-75 medio, 76-100 alto), a partir de stressValuesArray."""
+    vals = [p[1] for p in (s.get("stressValuesArray") or [])
+            if isinstance(p, list) and len(p) > 1 and isinstance(p[1], (int, float))
+            and 0 <= p[1] <= 100]
+    if not vals:
+        return {"rest_pct": None, "low_pct": None, "medium_pct": None, "high_pct": None}
+    n = len(vals)
+    pct = lambda lo, hi: round(100 * sum(lo <= v <= hi for v in vals) / n)  # noqa: E731
+    return {"rest_pct": pct(0, 25), "low_pct": pct(26, 50), "medium_pct": pct(51, 75),
+            "high_pct": pct(76, 100)}
+
+
 def _slim_training_status(ts: Any) -> Any:
     """Resumen legible de get_training_status (el crudo trae ids, URLs de imágenes y
     duplicados por dispositivo)."""
@@ -1006,10 +1084,8 @@ def garmin_get_stress(date: Optional[str] = None) -> dict:
         out["stress"] = {
             "avg_stress_level": s.get("avgStressLevel"),
             "max_stress_level": s.get("maxStressLevel"),
-            "rest_pct": s.get("restStressPercentage"),
-            "low_pct": s.get("lowStressPercentage"),
-            "medium_pct": s.get("mediumStressPercentage"),
-            "high_pct": s.get("highStressPercentage"),
+            **_stress_pcts(s),
+            "pct_note": "% del tiempo medido: reposo 0-25, bajo 26-50, medio 51-75, alto 76-100",
         }
     except Exception as e:  # noqa: BLE001
         out["stress"] = None
@@ -1109,18 +1185,8 @@ def garmin_get_training_status(date: Optional[str] = None) -> dict:
 
     _sub("training_status", lambda: _slim_training_status(_call("get_training_status", cdate)))
 
-    def _vo2():
-        m = _call("get_max_metrics", cdate)
-        rec = m[0] if isinstance(m, list) and m else m
-        gs = (rec or {}).get("generic", {}) if isinstance(rec, dict) else {}
-        return {"vo2max_running": gs.get("vo2MaxPreciseValue") or gs.get("vo2MaxValue"),
-                "fitness_age": (rec or {}).get("fitnessAge")}
-    _sub("vo2max", _vo2)
-
-    def _lt():
-        lt = _call("get_lactate_threshold", latest=True) or {}
-        return _strip(lt)
-    _sub("lactate_threshold", _lt)
+    _sub("vo2max", lambda: _latest_vo2max(cdate))
+    _sub("lactate_threshold", _lt_compact)
 
     _sub("race_predictions", lambda: _fmt_race_predictions(_call("get_race_predictions")))
 
@@ -1242,7 +1308,8 @@ def garmin_get_daily_summary(date: Optional[str] = None) -> dict:
             "total_distance_m": s.get("totalDistanceMeters"),
             "active_kcal": s.get("activeKilocalories"),
             "total_kcal": s.get("totalKilocalories"),
-            "floors_climbed": s.get("floorsAscended"),
+            "floors_climbed": round(s["floorsAscended"], 1)
+            if isinstance(s.get("floorsAscended"), (int, float)) else None,
             "intensity_min_moderate": s.get("moderateIntensityMinutes"),
             "intensity_min_vigorous": s.get("vigorousIntensityMinutes"),
             "avg_stress": s.get("averageStressLevel"),
@@ -1282,7 +1349,31 @@ def garmin_get_progress_summary(start_date: str, end_date: Optional[str] = None,
         start = _d(start_date)
         end = _d(end_date)
         data = _call("get_progress_summary_between_dates", start, end, metric)
-        return {"start": start, "end": end, "metric": metric, "summary": _strip(data)}
+        # Garmin entrega distancia y desnivel en cm y duración en ms.
+        conv = {"distance": (100000.0, "km"), "duration": (60000.0, "min"),
+                "elevationGain": (100.0, "m")}
+        div, unit = conv.get(metric, (1.0, None))
+        by_sport: dict[str, dict] = {}
+        for blk in data if isinstance(data, list) else [data]:
+            if not isinstance(blk, dict):
+                continue
+            for sport, metrics in (blk.get("stats") or {}).items():
+                st = (metrics or {}).get(metric) or {}
+                if not st:
+                    continue
+                agg = by_sport.setdefault(sport, {"activities": 0, "total": 0.0,
+                                                  "max": 0.0})
+                agg["activities"] += st.get("count") or 0
+                agg["total"] += (st.get("sum") or 0) / div
+                agg["max"] = max(agg["max"], (st.get("max") or 0) / div)
+        for agg in by_sport.values():
+            agg["avg"] = round(agg["total"] / agg["activities"], 1) if agg["activities"] else None
+            agg["total"] = round(agg["total"], 1)
+            agg["max"] = round(agg["max"], 1)
+        by_sport = {k: v for k, v in by_sport.items() if v["total"] > 0}
+        return {"start": start, "end": end, "metric": metric, "unit": unit,
+                "total": round(sum(v["total"] for v in by_sport.values()), 1),
+                "by_sport": by_sport}
     except Exception as e:  # noqa: BLE001
         return _err(e)
 
@@ -1392,9 +1483,11 @@ def garmin_get_altitude_vitals(date: Optional[str] = None) -> dict:
 
     def _endurance():
         e = _call("get_endurance_score", cdate) or {}
-        return {"overall_score": e.get("overallScore"),
-                "classification": e.get("classification") or e.get("gauge", {}).get("classification")} \
-            if isinstance(e, dict) else _strip(e)
+        if not isinstance(e, dict):
+            return _strip(e)
+        lv = _endurance_level(e)
+        return {"overall_score": lv.get("score"), "level": lv.get("level"),
+                "next_level_at": lv.get("next_level_at")}
 
     _sub("spo2", _spo2)
     _sub("respiration", _resp)
@@ -1516,10 +1609,13 @@ def _gmt_s(ts: Optional[str]) -> Optional[float]:
     return datetime.fromisoformat(ts.split(".")[0]).replace(tzinfo=timezone.utc).timestamp()
 
 
-def _hr_recovery_anchored(hr, t, aid: str, splits: Optional[list] = None):
+def _hr_recovery_anchored(hr, t, aid: str, splits: Optional[list] = None,
+                          t_abs: Optional[list] = None):
     """Caída de FC en los 60 s siguientes al FINAL del último bloque activo del
     entrenamiento (no la mayor caída de toda la sesión). Así un remate rápido o
-    una vuelta a la calma trotando no la distorsionan. Devuelve (valor, nota)."""
+    una vuelta a la calma trotando no la distorsionan. Devuelve (valor, nota).
+    Usa la hora absoluta de cada muestra cuando existe (directTimestamp): el tiempo
+    transcurrido se desfasa de las horas de los bloques si hubo pausas."""
     if splits is None:
         try:
             splits = (_call("get_activity_typed_splits", aid) or {}).get("splits") or []
@@ -1528,14 +1624,19 @@ def _hr_recovery_anchored(hr, t, aid: str, splits: Optional[list] = None):
     starts = [_gmt_s(s.get("startTimeGMT")) for s in splits if s.get("startTimeGMT")]
     ends = [_gmt_s(s.get("endTimeGMT")) for s in splits
             if s.get("type") == "INTERVAL_ACTIVE" and s.get("endTimeGMT")]
-    if t and starts and ends:
-        off = max(ends) - min(starts)
-        pairs = [(tt, h) for tt, h in zip(t, hr or []) if tt is not None and h]
-        at_end = [h for tt, h in pairs if off - 5 <= tt <= off]
-        after = [h for tt, h in pairs if off + 55 <= tt <= off + 65]
+    if ends and (t_abs or (t and starts)):
+        if t_abs:
+            clock, end = t_abs, max(ends)
+        else:
+            clock, end = t, max(ends) - min(starts)
+        pairs = [(tt, h) for tt, h in zip(clock, hr or []) if tt is not None and h]
+        at_end = [h for tt, h in pairs if end - 10 <= tt <= end]
+        after = [h for tt, h in pairs if end + 50 <= tt <= end + 70]
         if at_end and after:
             return (round(max(at_end) - sum(after) / len(after)),
                     "medida desde el final del último bloque activo")
+        return (None, "no medible: no hay muestras de FC en el minuto siguiente al "
+                      "último bloque activo (la actividad terminó o se pausó ahí)")
     legacy = _hr_recovery(hr, t)
     return (legacy, "proxy: mayor caída en 60 s de toda la sesión (sin bloques "
                     "estructurados); un remate rápido la infla" if legacy else None)
@@ -1601,7 +1702,7 @@ def garmin_get_activity_dynamics(activity_id: str) -> dict:
         hr_w, speed_w, power_w = sel(hr), sel(speed), sel(power)
         hs = [h for h in hr_w if h]
         half = len(hs) // 2
-        hrr, hrr_note = _hr_recovery_anchored(hr, t, aid, splits)
+        hrr, hrr_note = _hr_recovery_anchored(hr, t, aid, splits, t_abs)
         out = {
             "activity_id": aid,
             "analysis_window": window,
@@ -1690,7 +1791,14 @@ def garmin_get_body_composition(start_date: str, end_date: Optional[str] = None)
             "avg_body_fat_pct": avg.get("bodyFat"),
             "avg_body_water_pct": avg.get("bodyWater"),
             "avg_muscle_mass_kg": round(avg["muscleMass"] / 1000.0, 1) if avg.get("muscleMass") else None,
-            "measurements": _strip(measurements),
+            "measurements": [{
+                "date": m.get("calendarDate"),
+                "weight_kg": round(m["weight"] / 1000.0, 1) if m.get("weight") else None,
+                "bmi": m.get("bmi"), "body_fat_pct": m.get("bodyFat"),
+                "body_water_pct": m.get("bodyWater"),
+                "muscle_mass_kg": round(m["muscleMass"] / 1000.0, 1)
+                if m.get("muscleMass") else None,
+                "source": m.get("sourceType")} for m in measurements],
         }
         if not measurements and out["avg_weight_kg"] is None:
             out["note"] = ("Sin mediciones de báscula en el rango (requiere una báscula "
@@ -1760,31 +1868,6 @@ def garmin_get_training_calibration(date: Optional[str] = None) -> dict:
             out[key] = None
             out["_notes"][key] = f"{type(e).__name__}: {e}"
 
-    def _lt():
-        lt = _call("get_lactate_threshold", latest=True) or {}
-        shr = lt.get("speed_and_heart_rate") or {}
-        pw = lt.get("power") or {}
-        return {
-            "threshold_hr_bpm": shr.get("heartRate"),
-            "threshold_pace_min_km": _lthr_pace(shr.get("speed")),
-            "measured_on": (shr.get("calendarDate") or "")[:10] or None,
-            "functional_threshold_power_w": pw.get("functionalThresholdPower"),
-            "power_to_weight": round(pw["powerToWeight"], 2) if pw.get("powerToWeight") else None,
-            "weight_kg": pw.get("weight"),
-        }
-
-    def _vo2():
-        # VO2max del día puede venir vacío; retrocede hasta 3 días buscando lectura.
-        base = datetime.now(timezone.utc) + timedelta(hours=TZ_OFFSET)
-        for back in range(0, 4):
-            d = (base - timedelta(days=back)).date().isoformat()
-            m = _call("get_max_metrics", d)
-            rec = m[0] if isinstance(m, list) and m else m
-            gs = (rec or {}).get("generic", {}) if isinstance(rec, dict) else {}
-            v = gs.get("vo2MaxPreciseValue") or gs.get("vo2MaxValue")
-            if v:
-                return {"vo2max_running": v, "as_of": d}
-        return {"vo2max_running": None}
 
     def _readiness():
         r = _call("get_training_readiness", cdate)
@@ -1793,9 +1876,14 @@ def garmin_get_training_calibration(date: Optional[str] = None) -> dict:
             return {"score": rec.get("score"), "level": rec.get("level")}
         return None
 
-    _sub("lactate_threshold", _lt)
-    _sub("vo2max", _vo2)
+    _sub("lactate_threshold", _lt_compact)
+    _sub("vo2max", lambda: _latest_vo2max(cdate))
     _sub("training_status", lambda: _slim_training_status(_call("get_training_status", cdate)))
+    if not (out.get("vo2max") or {}).get("vo2max_running"):
+        ts_v = (out.get("training_status") or {}).get("vo2max_running") \
+            if isinstance(out.get("training_status"), dict) else None
+        if ts_v:
+            out["vo2max"] = {"vo2max_running": ts_v, "as_of": "estado de entrenamiento"}
     _sub("race_predictions", lambda: _fmt_race_predictions(_call("get_race_predictions")))
     _sub("readiness_today", _readiness)
 
@@ -2812,8 +2900,9 @@ def _day_rhr(call, iso):
 
 def _day_stress(call, iso):
     s = call("get_stress_data", iso) or {}
+    p = _stress_pcts(s)
     return {"avg": s.get("avgStressLevel"), "max": s.get("maxStressLevel"),
-            "rest_pct": s.get("restStressPercentage"), "high_pct": s.get("highStressPercentage")}
+            "rest_pct": p["rest_pct"], "high_pct": p["high_pct"]}
 
 
 def _day_vo2(call, iso):
@@ -3357,21 +3446,7 @@ def garmin_get_trend(metric: str, start_date: str, end_date: Optional[str] = Non
         if s:
             out["summary"] = s
         if isinstance(current, dict) and current.get("overallScore") is not None:
-            sc = current["overallScore"]
-            levels = [("elite", "classificationLowerLimitElite"),
-                      ("superior", "classificationLowerLimitSuperior"),
-                      ("experto", "classificationLowerLimitExpert"),
-                      ("muy entrenado", "classificationLowerLimitWellTrained"),
-                      ("entrenado", "classificationLowerLimitTrained"),
-                      ("intermedio", "classificationLowerLimitIntermediate")]
-            label = next((name for name, k in levels
-                          if isinstance(current.get(k), (int, float)) and sc >= current[k]),
-                         "recreativo")
-            out["current"] = {"date": current.get("calendarDate"), "score": sc,
-                              "level": label,
-                              "next_level_at": next((current[k] for _, k in reversed(levels)
-                                                     if isinstance(current.get(k), (int, float))
-                                                     and current[k] > sc), None)}
+            out["current"] = _endurance_level(current)
         return out
     except Exception as e:  # noqa: BLE001
         return _err(e)
