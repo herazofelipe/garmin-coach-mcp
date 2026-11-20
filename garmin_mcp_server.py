@@ -2739,8 +2739,6 @@ def garmin_search_exercises(texto: str, category: Optional[str] = None, limit: i
 # --------------------------------------------------------------------------- #
 # Herramientas — equipo, récords, tendencias y Body Battery
 # --------------------------------------------------------------------------- #
-MAX_DAYS = 31          # métricas que se piden día por día (1 llamada/día a Garmin)
-MAX_RANGE_DAYS = 366   # métricas que Garmin entrega por rango en una sola llamada
 
 # Récords de carrera: typeId -> etiqueta (documentado en garminconnect.get_personal_record)
 _RUN_PR = {1: "1 km", 2: "1 milla", 3: "5 km", 4: "10 km", 5: "Media maratón",
@@ -3227,8 +3225,9 @@ def garmin_get_trend(metric: str, start_date: str, end_date: Optional[str] = Non
         resolution: 'auto' (diaria hasta 62 días, semanal por encima), 'daily' o
             'weekly' (promedio lunes-domingo). Solo para métricas diarias.
 
-    Límites: hasta 366 días. spo2 y skin_temp no tienen consulta por rango en Garmin
-    (1 llamada por día) → hasta 186 días. Añadir ':per_day' a la métrica fuerza la
+    Límites: hasta 366 días para todas, en tramos (Body Battery de 28 días, Garmin
+    rechaza más). spo2 y skin_temp no tienen consulta por rango en Garmin (1 llamada
+    por día) → hasta 186 días. intensity_minutes y endurance_score son semanales. Añadir ':per_day' a la métrica fuerza la
     consulta día a día (diagnóstico).
     """
     m = (metric or "").strip().lower()
@@ -3265,40 +3264,115 @@ def garmin_get_trend(metric: str, start_date: str, end_date: Optional[str] = Non
                 out["summary"] = s
             return out
 
-        d0, d1 = _range(start_date, end_date, _today(), MAX_RANGE_DAYS)
+        d0, d1 = _range(start_date, end_date, _today(), TREND_MAX_DAYS)
         a, b = d0.isoformat(), d1.isoformat()
+        res = (resolution or "auto").strip().lower()
+        weekly = res == "weekly" or (res == "auto"
+                                     and (d1 - d0).days + 1 > WEEKLY_AUTO_DAYS)
+        n_chunks = 0
 
-        if m == "body_battery":
-            raw = _call("get_body_battery", a, b) or []
-            days = []
-            for d in raw if isinstance(raw, list) else []:
-                arr = d.get("bodyBatteryValuesArray") or []
-                vals = [p[1] for p in arr if isinstance(p, list) and len(p) > 1
-                        and p[1] is not None]
-                days.append({"date": d.get("date") or d.get("calendarDate"),
-                             "charged": d.get("charged"), "drained": d.get("drained"),
-                             "max": max(vals) if vals else None,
-                             "min": min(vals) if vals else None})
-            out = {"metric": m, "start": a, "end": b, "count": len(days), "days": days}
-            s = _summary(days, "max")
+        def _pack(days: list[dict], key: str, extra: Optional[dict] = None) -> dict:
+            out = {"metric": m, "start": a, "end": b, "count": len(days),
+                   "resolution": "weekly" if weekly else "daily", "chunks": n_chunks}
+            if weekly:
+                out["weeks"] = _weekly(days)
+            else:
+                out["days"] = days
+            s = _summary(days, key)
+            if s:
+                out["summary"] = s
+            if extra:
+                out.update(extra)
+            return out
+
+        if m == "body_battery":            # Garmin: "requested date range is too big"
+            by_day: dict[str, dict] = {}
+            for c0, c1 in _chunks(d0, d1, 28):
+                n_chunks += 1
+                raw = _call("get_body_battery", c0.isoformat(), c1.isoformat()) or []
+                for d in raw if isinstance(raw, list) else []:
+                    iso = (d.get("date") or d.get("calendarDate") or "")[:10]
+                    arr = d.get("bodyBatteryValuesArray") or []
+                    vals = [p[1] for p in arr if isinstance(p, list) and len(p) > 1
+                            and p[1] is not None]
+                    if iso and (vals or d.get("charged") is not None):
+                        by_day[iso] = {"charged": d.get("charged"),
+                                       "drained": d.get("drained"),
+                                       "max": max(vals) if vals else None,
+                                       "min": min(vals) if vals else None}
+            return _pack([{"date": k, **by_day[k]} for k in sorted(by_day)], "max")
+
+        if m == "intensity_minutes":       # semanal por naturaleza
+            by_week: dict[str, dict] = {}
+            for c0, c1 in _chunks(d0, d1, 84):
+                n_chunks += 1
+                for w in _call("get_weekly_intensity_minutes", c0.isoformat(),
+                               c1.isoformat()) or []:
+                    wk = (w.get("calendarDate") or "")[:10]
+                    if wk:
+                        mod, vig = w.get("moderateValue") or 0, w.get("vigorousValue") or 0
+                        by_week[wk] = {"week_start": wk, "moderate": mod, "vigorous": vig,
+                                       "total_equiv": mod + 2 * vig,
+                                       "goal": w.get("weeklyGoal")}
+            weeks = [by_week[k] for k in sorted(by_week)]
+            out = {"metric": m, "start": a, "end": b, "count": len(weeks),
+                   "resolution": "weekly", "chunks": n_chunks, "weeks": weeks,
+                   "note": "total_equiv = moderados + 2×vigorosos (criterio de Garmin)"}
+            s = _summary(weeks, "total_equiv")
             if s:
                 out["summary"] = s
             return out
 
-        if m == "intensity_minutes":
-            raw = _call("get_weekly_intensity_minutes", a, b) or []
-            weeks = [{"week_start": w.get("calendarDate"),
-                      "moderate": w.get("moderateValue"),
-                      "vigorous": w.get("vigorousValue"),
-                      "total_equiv": (w.get("moderateValue") or 0)
-                      + 2 * (w.get("vigorousValue") or 0),
-                      "goal": w.get("weeklyGoal")} for w in (raw or [])]
-            return {"metric": m, "start": a, "end": b, "count": len(weeks),
-                    "weeks": weeks,
-                    "note": "total_equiv = moderados + 2×vigorosos (criterio de Garmin)"}
+        if m == "hill_score":
+            by_day = {}
+            for c0, c1 in _chunks(d0, d1, 91):
+                n_chunks += 1
+                raw = _call("get_hill_score", c0.isoformat(), c1.isoformat())
+                rows = (raw.get("hillScoreDTOList") if isinstance(raw, dict) else None) or []
+                for r in rows:
+                    iso = (r.get("calendarDate") or "")[:10]
+                    if iso and r.get("overallScore") is not None:
+                        by_day[iso] = {"overall": r.get("overallScore"),
+                                       "strength": r.get("strengthScore"),
+                                       "endurance": r.get("enduranceScore")}
+            return _pack([{"date": k, **by_day[k]} for k in sorted(by_day)], "overall")
 
-        method = "get_hill_score" if m == "hill_score" else "get_endurance_score"
-        return {"metric": m, "start": a, "end": b, "data": _strip(_call(method, a, b))}
+        # endurance_score: Garmin lo agrupa por semanas; se une por tramos de 91 días.
+        by_week = {}
+        current = None
+        for c0, c1 in _chunks(d0, d1, 91):
+            n_chunks += 1
+            raw = _call("get_endurance_score", c0.isoformat(), c1.isoformat()) or {}
+            if not isinstance(raw, dict):
+                continue
+            for wk, g in (raw.get("groupMap") or {}).items():
+                if isinstance(g, dict) and g.get("groupAverage") is not None:
+                    by_week[wk[:10]] = {"week_start": wk[:10], "avg": g.get("groupAverage"),
+                                        "max": g.get("groupMax")}
+            current = raw.get("enduranceScoreDTO") or current
+        weeks = [by_week[k] for k in sorted(by_week)]
+        out = {"metric": m, "start": a, "end": b, "count": len(weeks),
+               "resolution": "weekly", "chunks": n_chunks, "weeks": weeks}
+        s = _summary(weeks, "avg")
+        if s:
+            out["summary"] = s
+        if isinstance(current, dict) and current.get("overallScore") is not None:
+            sc = current["overallScore"]
+            levels = [("elite", "classificationLowerLimitElite"),
+                      ("superior", "classificationLowerLimitSuperior"),
+                      ("experto", "classificationLowerLimitExpert"),
+                      ("muy entrenado", "classificationLowerLimitWellTrained"),
+                      ("entrenado", "classificationLowerLimitTrained"),
+                      ("intermedio", "classificationLowerLimitIntermediate")]
+            label = next((name for name, k in levels
+                          if isinstance(current.get(k), (int, float)) and sc >= current[k]),
+                         "recreativo")
+            out["current"] = {"date": current.get("calendarDate"), "score": sc,
+                              "level": label,
+                              "next_level_at": next((current[k] for _, k in reversed(levels)
+                                                     if isinstance(current.get(k), (int, float))
+                                                     and current[k] > sc), None)}
+        return out
     except Exception as e:  # noqa: BLE001
         return _err(e)
 
@@ -3462,7 +3536,7 @@ def garmin_unschedule_workout(scheduled_id: str) -> dict:
 # a la defensiva y se devuelven los nombres de campo vistos para poder ajustarlo.
 # Por privacidad NO se devuelven actividad sexual, deseo sexual ni notas libres.
 
-SKIN_MAX_DAYS = 62
+SKIN_MAX_DAYS = TREND_PER_DAY_MAX
 CYCLE_CAL_MAX_DAYS = 90          # Garmin rechaza ventanas de 92 días o más
 _CYCLE_PATH = "/periodichealth-service/menstrualcycle"
 CYCLE_DISCLAIMER = (
@@ -3811,7 +3885,7 @@ def garmin_get_skin_temperature(start_date: Optional[str] = None,
         start_date: Fecha inicial ISO. Por defecto 35 días antes de end_date.
         end_date: Fecha final ISO. Por defecto hoy.
 
-    Límite: 62 noches (1 llamada por noche).
+    Límite: 186 noches (1 llamada por noche, 4 en paralelo).
     """
     try:
         d1 = _iso(_d(end_date))
