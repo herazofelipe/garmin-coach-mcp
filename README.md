@@ -95,8 +95,9 @@ Your copy does **not** update by itself when this repo changes.
 2. **Refresh Claude only when tools are added or changed.** Claude keeps the list of tools and
    their parameters it saw when you connected. If a release adds tools or parameters
    ([commits](https://github.com/herazofelipe/garmin-coach-mcp/commits/main)), go to claude.ai
-   (web) → Settings → Connectors, remove the Garmin connector and add it again with the same
-   URL, then open a new chat.
+   (web) → Settings → Connectors, update the Garmin connector's tool list, and open a new chat.
+   Only if the new tools still don't show, remove the connector and add it again with the
+   same URL.
 
 Your URL, credentials and secret stay the same across updates.
 
@@ -157,7 +158,7 @@ Si tu cuenta usa verificación en dos pasos, genera `GARMIN_TOKENS` con
 1. En Render: tu servicio → **Manual Deploy** → **Deploy latest commit**, y espera a que diga
    *Live*. Las mejoras de las herramientas que ya tenías funcionan de inmediato.
 2. Solo si la versión agrega herramientas o parámetros nuevos: en claude.ai (web) → Ajustes →
-   Conectores, quita el conector de Garmin, agrégalo otra vez con la misma URL y abre un chat
-   nuevo.
+   Conectores, actualiza la lista de herramientas del conector de Garmin y abre un chat nuevo.
+   Únicamente si aun así no aparecen, quítalo y agrégalo otra vez con la misma URL.
 
 La URL, las credenciales y el secreto no cambian al actualizar.
