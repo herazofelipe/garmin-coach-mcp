@@ -950,7 +950,9 @@ def garmin_get_readiness_range(start_date: str, end_date: Optional[str] = None) 
             return {"date": iso, "score": rec.get("score"), "level": rec.get("level"),
                     "feedback": rec.get("feedbackShort") or rec.get("feedbackLong"),
                     "sleep_score": rec.get("sleepScore"),
-                    "recovery_time_h": rec.get("recoveryTime"),
+                    # Garmin entrega recoveryTime en minutos (máx. 5760 = 96 h).
+                    "recovery_time_h": round(rec["recoveryTime"] / 60, 1)
+                    if isinstance(rec.get("recoveryTime"), (int, float)) else None,
                     "hrv_factor": rec.get("hrvFactorPercent")}
 
         def _one_day(_c, iso):
