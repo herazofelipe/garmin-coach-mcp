@@ -2941,6 +2941,18 @@ def _chunks(d0: _date, d1: _date, size: int = CHUNK_DAYS):
         cur = end + timedelta(days=1)
 
 
+def _chunks_back(d0: _date, d1: _date, size: int):
+    """Tramos contados hacia atrás desde d1 (para métricas que Garmin agrupa en semanas
+    ancladas a la fecha final: con tramos múltiplos de 7 las semanas no se solapan)."""
+    out = []
+    end = d1
+    while end >= d0:
+        start = max(d0, end - timedelta(days=size - 1))
+        out.append((start, end))
+        end = start - timedelta(days=1)
+    return list(reversed(out))
+
+
 def _rows_by_date(obj: Any, skip_parents: tuple = ("cycling",)) -> dict[str, dict]:
     """Filas con calendarDate en cualquier anidación (fusiona las del mismo día)."""
     rows: dict[str, dict] = {}
@@ -3429,7 +3441,7 @@ def garmin_get_trend(metric: str, start_date: str, end_date: Optional[str] = Non
         # endurance_score: Garmin lo agrupa por semanas; se une por tramos de 91 días.
         by_week = {}
         current = None
-        for c0, c1 in _chunks(d0, d1, 91):
+        for c0, c1 in _chunks_back(d0, d1, 91):
             n_chunks += 1
             raw = _call("get_endurance_score", c0.isoformat(), c1.isoformat()) or {}
             if not isinstance(raw, dict):
