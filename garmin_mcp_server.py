@@ -849,11 +849,6 @@ def garmin_get_last_activity() -> dict:
         return _err(e)
 
 
-@mcp.tool(
-    name="garmin_get_activity_analysis",
-    annotations={"title": "Análisis completo de actividad", "readOnlyHint": True,
-                 "destructiveHint": False, "idempotentHint": True, "openWorldHint": True},
-)
 def _r1(v: Any, div: float = 1.0, nd: int = 1) -> Optional[float]:
     if not isinstance(v, (int, float)) or isinstance(v, bool):
         return None
@@ -887,6 +882,11 @@ def _compact_zones(z: Any) -> Any:
              "min": _r1(r.get("secsInZone"), 60.0)} for r in z if isinstance(r, dict)]
 
 
+@mcp.tool(
+    name="garmin_get_activity_analysis",
+    annotations={"title": "Análisis completo de actividad", "readOnlyHint": True,
+                 "destructiveHint": False, "idempotentHint": True, "openWorldHint": True},
+)
 def garmin_get_activity_analysis(activity_id: str, include_weather: bool = False) -> dict:
     """Análisis completo de una actividad en una sola llamada: resumen + splits estándar
     (vuelta a vuelta) + splits tipados (por bloque) + zonas de FC + zonas de potencia.
