@@ -33,6 +33,7 @@ import json
 import logging
 import math
 import os
+import re
 import threading
 import urllib.error
 import urllib.parse
@@ -212,22 +213,42 @@ def _call(method: str, *args, **kwargs) -> Any:
         return getattr(_client, method)(*args, **kwargs)
 
 
+_SCRUB = (
+    (re.compile(r"[\w.+-]+@[\w-]+\.[\w.]+"), "<email>"),                    # correos
+    (re.compile(r"\b[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-"
+                r"[0-9a-fA-F]{12}\b"), "<id>"),                                # UUID de Garmin
+    (re.compile(r"[A-Za-z0-9+_=-]{32,}"), "<token>"),                         # tokens / secretos
+    (re.compile(r"\?[^\s'\"]*"), ""),                                         # query strings
+)
+
+
+def _scrub(text: Any) -> str:
+    """Limpia un mensaje de error antes de devolverlo: sin correos, UUID, tokens,
+    parámetros de URL ni la ruta secreta del conector."""
+    t = str(text)
+    if MCP_PATH.rstrip("/") != "/mcp":
+        t = t.replace(MCP_PATH, "/mcp/***")
+    for rx, sub in _SCRUB:
+        t = rx.sub(sub, t)
+    return t[:300]
+
+
 def _err(e: Exception) -> dict:
-    """Mensajes de error accionables."""
+    """Mensajes de error accionables (detalle limpio de datos sensibles)."""
     if isinstance(e, ValueError):
-        return {"error": str(e)}
+        return {"error": _scrub(e)}
     if isinstance(e, GarminConnectAuthenticationError):
         return {"error": "Autenticación con Garmin fallida incluso tras intentar "
                           "re-login. Verifica GARMIN_EMAIL/GARMIN_PASSWORD (o regenera "
                           "GARMIN_TOKENS) en las variables de entorno del servidor.",
-                "detail": str(e)}
+                "detail": _scrub(e)}
     if isinstance(e, GarminConnectTooManyRequestsError):
         return {"error": "Garmin respondió 429 (demasiadas solicitudes). Espera unos "
-                          "minutos antes de reintentar.", "detail": str(e)}
+                          "minutos antes de reintentar.", "detail": _scrub(e)}
     if isinstance(e, GarminConnectConnectionError):
         return {"error": "Error de conexión con Garmin Connect. Reintenta más tarde.",
-                "detail": str(e)}
-    return {"error": f"Error inesperado: {type(e).__name__}", "detail": str(e)}
+                "detail": _scrub(e)}
+    return {"error": f"Error inesperado: {type(e).__name__}", "detail": _scrub(e)}
 
 
 # --------------------------------------------------------------------------- #
@@ -252,10 +273,23 @@ _BULKY_KEYS = {
 }
 
 
+# Identificadores de la cuenta y del reloj: no aportan al análisis y no deben salir
+# del servidor (quedan en el historial de los chats).
+_PII_KEYS = {
+    "userProfilePK", "userProfilePk", "userProfileId", "userId", "ownerId",
+    "ownerDisplayName", "ownerFullName", "ownerProfileImageUrlSmall",
+    "ownerProfileImageUrlMedium", "ownerProfileImageUrlLarge", "displayName",
+    "fullName", "firstName", "lastName", "emailAddress", "email", "deviceId",
+    "unitId", "serialNumber", "activityUUID", "userProfileImageUrl",
+}
+
+
 def _strip(obj: Any) -> Any:
-    """Quita recursivamente claves voluminosas para no inflar el contexto."""
+    """Quita recursivamente claves voluminosas (para no inflar el contexto) e
+    identificadores de la cuenta y del reloj."""
     if isinstance(obj, dict):
-        return {k: _strip(v) for k, v in obj.items() if k not in _BULKY_KEYS}
+        return {k: _strip(v) for k, v in obj.items()
+                if k not in _BULKY_KEYS and k not in _PII_KEYS}
     if isinstance(obj, list):
         return [_strip(v) for v in obj]
     return obj
@@ -678,7 +712,9 @@ def _om_fetch(lat: float, lon: float, t0: float, t1: float) -> tuple[dict, str]:
     d0 = datetime.fromtimestamp(t0, timezone.utc).date()
     d1 = datetime.fromtimestamp(t1, timezone.utc).date()
     days_ago = (datetime.now(timezone.utc).date() - d0).days
-    base = {"latitude": round(lat, 4), "longitude": round(lon, 4),
+    # 2 decimales (~1 km): suficiente para el clima (rejilla de 1-11 km) y no revela
+    # a Open-Meteo el punto exacto de salida (a menudo la casa).
+    base = {"latitude": round(lat, 2), "longitude": round(lon, 2),
             "hourly": ",".join(OM_HOURLY), "timezone": "GMT",
             "timeformat": "unixtime", "wind_speed_unit": "kmh"}
 
@@ -767,7 +803,8 @@ def _session_weather(full: Any, typed: list, garmin_weather: Any) -> dict:
         out["source"] = None
         warnings.append("No se pudo determinar la hora de inicio de la actividad.")
     else:
-        out["location"] = {"lat": round(lat, 4), "lon": round(lon, 4)}
+        out["location"] = {"lat": round(lat, 2), "lon": round(lon, 2),
+                           "precision": "~1 km (redondeado por privacidad)"}
         try:
             data, endpoint = _om_fetch(lat, lon, t0, t1)
             out["endpoint"] = endpoint
@@ -779,7 +816,7 @@ def _session_weather(full: Any, typed: list, garmin_weather: Any) -> dict:
                 warnings.append("Open-Meteo no tiene datos para esa fecha y lugar.")
         except (urllib.error.URLError, TimeoutError, ValueError, OSError) as e:
             out["source"] = None
-            warnings.append(f"Open-Meteo no respondió ({type(e).__name__}: {str(e)[:120]}).")
+            warnings.append(f"Open-Meteo no respondió ({type(e).__name__}: {_scrub(e)[:120]}).")
 
     st = _garmin_station(garmin_weather, lat, lon)
     out["garmin_station"] = st
@@ -933,7 +970,7 @@ def garmin_get_activity_analysis(activity_id: str, include_weather: bool = False
             out[key] = _strip(_call(method, *args))
         except Exception as e:  # noqa: BLE001
             out[key] = None
-            out["_notes"][key] = f"{type(e).__name__}: {e}"
+            out["_notes"][key] = f"{type(e).__name__}: {_scrub(e)}"
 
     full = None
     try:
@@ -941,7 +978,7 @@ def garmin_get_activity_analysis(activity_id: str, include_weather: bool = False
         out["summary"] = _slim_activity(full) if isinstance(full, dict) else full
     except Exception as e:  # noqa: BLE001
         out["summary"] = None
-        out["_notes"]["summary"] = f"{type(e).__name__}: {e}"
+        out["_notes"]["summary"] = f"{type(e).__name__}: {_scrub(e)}"
 
     _sub("splits", "get_activity_splits", aid)
     _sub("typed_splits", "get_activity_typed_splits", aid)
@@ -953,7 +990,7 @@ def garmin_get_activity_analysis(activity_id: str, include_weather: bool = False
             gw = _call("get_activity_weather", aid)
         except Exception as e:  # noqa: BLE001 — el clima de Garmin es opcional
             gw = None
-            out["_notes"]["garmin_weather"] = f"{type(e).__name__}: {e}"
+            out["_notes"]["garmin_weather"] = f"{type(e).__name__}: {_scrub(e)}"
         out["weather"] = _session_weather(full, ts or [], gw)
     if isinstance(out.get("summary"), dict) and summary_is_empty(out["summary"]) and ts:
         out["summary"].update(summary_from_splits(ts))
@@ -1007,7 +1044,7 @@ def garmin_morning_check(date: Optional[str] = None) -> dict:
             out[key] = fn()
         except Exception as e:  # noqa: BLE001
             out[key] = None
-            out["_notes"][key] = f"{type(e).__name__}: {e}"
+            out["_notes"][key] = f"{type(e).__name__}: {_scrub(e)}"
 
     def _readiness():
         r = _call("get_training_readiness", cdate)
@@ -1160,7 +1197,7 @@ def garmin_get_stress(date: Optional[str] = None) -> dict:
         }
     except Exception as e:  # noqa: BLE001
         out["stress"] = None
-        out["_notes"]["stress"] = f"{type(e).__name__}: {e}"
+        out["_notes"]["stress"] = f"{type(e).__name__}: {_scrub(e)}"
 
     try:
         bb = _call("get_body_battery", cdate, cdate)
@@ -1179,7 +1216,7 @@ def garmin_get_stress(date: Optional[str] = None) -> dict:
             out["body_battery"] = None
     except Exception as e:  # noqa: BLE001
         out["body_battery"] = None
-        out["_notes"]["body_battery"] = f"{type(e).__name__}: {e}"
+        out["_notes"]["body_battery"] = f"{type(e).__name__}: {_scrub(e)}"
 
     if not out["_notes"]:
         out.pop("_notes")
@@ -1252,7 +1289,7 @@ def garmin_get_training_status(date: Optional[str] = None) -> dict:
             out[key] = fn()
         except Exception as e:  # noqa: BLE001
             out[key] = None
-            out["_notes"][key] = f"{type(e).__name__}: {e}"
+            out["_notes"][key] = f"{type(e).__name__}: {_scrub(e)}"
 
     _sub("training_status", lambda: _slim_training_status(_call("get_training_status", cdate)))
 
@@ -1503,7 +1540,7 @@ def garmin_compare_activities(activity_ids: list[str]) -> dict:
                 a = _call("get_activity", str(aid))
                 rows.append(_slim_activity(a) if isinstance(a, dict) else {"activity_id": aid, "error": "no data"})
             except Exception as e:  # noqa: BLE001
-                rows.append({"activity_id": aid, "error": f"{type(e).__name__}: {e}"})
+                rows.append({"activity_id": aid, "error": f"{type(e).__name__}: {_scrub(e)}"})
         return {"count": len(rows), "activities": rows}
     except Exception as e:  # noqa: BLE001
         return _err(e)
@@ -1532,7 +1569,7 @@ def garmin_get_altitude_vitals(date: Optional[str] = None) -> dict:
             out[key] = fn()
         except Exception as e:  # noqa: BLE001
             out[key] = None
-            out["_notes"][key] = f"{type(e).__name__}: {e}"
+            out["_notes"][key] = f"{type(e).__name__}: {_scrub(e)}"
 
     def _spo2():
         s = _call("get_spo2_data", cdate) or {}
@@ -1937,7 +1974,7 @@ def garmin_get_training_calibration(date: Optional[str] = None) -> dict:
             out[key] = fn()
         except Exception as e:  # noqa: BLE001
             out[key] = None
-            out["_notes"][key] = f"{type(e).__name__}: {e}"
+            out["_notes"][key] = f"{type(e).__name__}: {_scrub(e)}"
 
 
     def _readiness():
@@ -2841,7 +2878,7 @@ def _delete_workouts(workout_ids: list) -> dict:
             _call("delete_workout", str(wid))
             ok.append(str(wid))
         except Exception as exc:  # noqa: BLE001 — se reporta el fallo por id
-            fail.append({"workout_id": str(wid), "error": str(exc)[:200]})
+            fail.append({"workout_id": str(wid), "error": _scrub(exc)[:200]})
     return {"borrados": ok, "fallidos": fail}
 
 
@@ -4153,13 +4190,13 @@ def garmin_cycle_insights(date: Optional[str] = None, lookback_days: int = 60) -
                              f"{(today - timedelta(days=look - 1)).isoformat()}/{cdate}")
             cycles = _cycle_starts(cal, today)
         except Exception as e:  # noqa: BLE001
-            out["_notes"]["calendar"] = f"{type(e).__name__}: {e}"
+            out["_notes"]["calendar"] = f"{type(e).__name__}: {_scrub(e)}"
 
     skin = {"nights": [], "supported": False}
     try:
         skin = _skin_series(today - timedelta(days=min(look, 45) - 1), today)
     except Exception as e:  # noqa: BLE001
-        out["_notes"]["skin_temperature"] = f"{type(e).__name__}: {e}"
+        out["_notes"]["skin_temperature"] = f"{type(e).__name__}: {_scrub(e)}"
     shifts = _temp_shifts(skin["nights"]) if skin["supported"] else []
 
     if not tracking and not skin["supported"]:
