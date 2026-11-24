@@ -20,3 +20,6 @@ skills/garmin-run-coach/
 # Patch leftovers
 *.orig
 *.rej
+
+# Test caches
+.pytest_cache/

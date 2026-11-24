@@ -1,0 +1,8 @@
+# Allowed ranges (edit these). The exact, hash-pinned list that gets installed is
+# requirements.txt, generated with:
+#   pip-compile --generate-hashes --strip-extras --allow-unsafe -o requirements.txt requirements.in
+# Tested with fastmcp 4.2.5 (Skills over MCP) and garminconnect 0.3.16-0.3.20.
+fastmcp>=4.2.5,<4.3
+# Background tasks (SEP-2663), in-memory backend: no Redis needed.
+fastmcp-tasks>=4.2.5,<4.3
+garminconnect>=0.3.16,<0.4

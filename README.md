@@ -143,11 +143,23 @@ Your URL, credentials and secret stay the same across updates.
 ## Run locally
 
 ```bash
-pip install -r requirements.txt "garmin-fit-sdk>=21,<22"
+pip install --require-hashes -r requirements.txt
+pip install --require-hashes -r requirements-build.txt
 python build_exercise_catalog.py
 export GARMIN_EMAIL="..." GARMIN_PASSWORD="..."      # or GARMIN_TOKENS
 HOST=127.0.0.1 PORT=8000 python garmin_mcp_server.py # MCP at http://127.0.0.1:8000/mcp
 ```
+
+## Tests and dependencies
+
+- `tests/` holds security and behaviour tests (Garmin is mocked; no account needed):
+  `pip install --require-hashes -r requirements.txt -r requirements-dev.txt && pytest tests`.
+  GitHub Actions runs them, plus `pip-audit`, on every push. In Render you can set
+  Auto-Deploy to *After CI checks pass* so a failing test blocks the deploy.
+- `requirements.txt` pins exact versions with hashes; edit the ranges in `requirements.in` and
+  regenerate it with the command in its header. Dependabot opens weekly update PRs.
+- If you intentionally change a tool's name or parameters, refresh the snapshot with
+  `UPDATE_SNAPSHOT=1 pytest tests` and refresh the connector in Claude.
 
 ## License
 

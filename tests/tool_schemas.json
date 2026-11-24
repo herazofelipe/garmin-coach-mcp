@@ -1,0 +1,1006 @@
+{
+ "garmin_account_info": {
+  "additionalProperties": false,
+  "properties": {},
+  "type": "object"
+ },
+ "garmin_compare_activities": {
+  "additionalProperties": false,
+  "properties": {
+   "activity_ids": {
+    "description": "Lista de 2 a 4 activity_id a comparar.",
+    "items": {
+     "type": "string"
+    },
+    "type": "array"
+   }
+  },
+  "required": [
+   "activity_ids"
+  ],
+  "type": "object"
+ },
+ "garmin_create_running_workout": {
+  "additionalProperties": false,
+  "properties": {
+   "description": {
+    "anyOf": [
+     {
+      "type": "string"
+     },
+     {
+      "type": "null"
+     }
+    ],
+    "default": null,
+    "description": "Nota libre del entrenamiento (opcional)."
+   },
+   "name": {
+    "description": "Nombre del entrenamiento.",
+    "type": "string"
+   },
+   "schedule_date": {
+    "anyOf": [
+     {
+      "type": "string"
+     },
+     {
+      "type": "null"
+     }
+    ],
+    "default": null,
+    "description": "Fecha ISO 'YYYY-MM-DD' para agendarlo (opcional)."
+   },
+   "steps": {
+    "description": "Lista de pasos/bloques como se describe arriba.",
+    "items": {},
+    "type": "array"
+   }
+  },
+  "required": [
+   "name",
+   "steps"
+  ],
+  "type": "object"
+ },
+ "garmin_create_strength_workout": {
+  "additionalProperties": false,
+  "properties": {
+   "description": {
+    "anyOf": [
+     {
+      "type": "string"
+     },
+     {
+      "type": "null"
+     }
+    ],
+    "default": null,
+    "description": "Nota libre (opcional)."
+   },
+   "exercises": {
+    "description": "Lista de ejercicios como se describe arriba.",
+    "items": {},
+    "type": "array"
+   },
+   "name": {
+    "description": "Nombre del entrenamiento.",
+    "type": "string"
+   },
+   "schedule_date": {
+    "anyOf": [
+     {
+      "type": "string"
+     },
+     {
+      "type": "null"
+     }
+    ],
+    "default": null,
+    "description": "Fecha ISO 'YYYY-MM-DD' para agendarlo (opcional)."
+   }
+  },
+  "required": [
+   "name",
+   "exercises"
+  ],
+  "type": "object"
+ },
+ "garmin_create_swim_workout": {
+  "additionalProperties": false,
+  "properties": {
+   "description": {
+    "anyOf": [
+     {
+      "type": "string"
+     },
+     {
+      "type": "null"
+     }
+    ],
+    "default": null,
+    "description": "Nota libre (opcional)."
+   },
+   "name": {
+    "description": "Nombre del entrenamiento.",
+    "type": "string"
+   },
+   "pool_length_m": {
+    "default": 25.0,
+    "description": "Longitud de la piscina en metros (por defecto 25).",
+    "type": "number"
+   },
+   "schedule_date": {
+    "anyOf": [
+     {
+      "type": "string"
+     },
+     {
+      "type": "null"
+     }
+    ],
+    "default": null,
+    "description": "Fecha ISO 'YYYY-MM-DD' para agendarlo (opcional)."
+   },
+   "steps": {
+    "description": "Lista de pasos/bloques como se describe arriba.",
+    "items": {},
+    "type": "array"
+   }
+  },
+  "required": [
+   "name",
+   "steps"
+  ],
+  "type": "object"
+ },
+ "garmin_cycle_insights": {
+  "additionalProperties": false,
+  "properties": {
+   "date": {
+    "anyOf": [
+     {
+      "type": "string"
+     },
+     {
+      "type": "null"
+     }
+    ],
+    "default": null,
+    "description": "Fecha ISO 'YYYY-MM-DD'. Por defecto hoy."
+   },
+   "lookback_days": {
+    "default": 60,
+    "description": "Días hacia atrás para historial de ciclos (30–90) y noches de\ntemperatura (hasta 45). Por defecto 60.",
+    "type": "integer"
+   }
+  },
+  "type": "object"
+ },
+ "garmin_delete_workout": {
+  "additionalProperties": false,
+  "properties": {
+   "workout_id": {
+    "type": "string"
+   }
+  },
+  "required": [
+   "workout_id"
+  ],
+  "type": "object"
+ },
+ "garmin_delete_workouts": {
+  "additionalProperties": false,
+  "properties": {
+   "workout_ids": {
+    "items": {
+     "type": "string"
+    },
+    "type": "array"
+   }
+  },
+  "required": [
+   "workout_ids"
+  ],
+  "type": "object"
+ },
+ "garmin_get_activities_by_date": {
+  "additionalProperties": false,
+  "properties": {
+   "activity_type": {
+    "anyOf": [
+     {
+      "type": "string"
+     },
+     {
+      "type": "null"
+     }
+    ],
+    "default": null,
+    "description": "Filtro opcional (p. ej. 'running')."
+   },
+   "end_date": {
+    "anyOf": [
+     {
+      "type": "string"
+     },
+     {
+      "type": "null"
+     }
+    ],
+    "default": null,
+    "description": "Fecha final ISO 'YYYY-MM-DD'. Por defecto hoy."
+   },
+   "start_date": {
+    "description": "Fecha inicial ISO 'YYYY-MM-DD'.",
+    "type": "string"
+   }
+  },
+  "required": [
+   "start_date"
+  ],
+  "type": "object"
+ },
+ "garmin_get_activity_analysis": {
+  "additionalProperties": false,
+  "properties": {
+   "activity_id": {
+    "description": "ID de la actividad (de garmin_list_activities o get_last_activity).",
+    "type": "string"
+   },
+   "include_weather": {
+    "default": false,
+    "description": "Si True, incluye el clima de la sesión desde Open-Meteo en el\npunto GPS de inicio, a la hora más cercana al inicio y al final\n(temperatura, humedad relativa, punto de rocío, sensación térmica, viento),\nmás la estación que usó Garmin con su distancia; avisa si está a > 15 km.\nSin GPS (cinta) no hay consulta a Open-Meteo. Por defecto False.",
+    "type": "boolean"
+   }
+  },
+  "required": [
+   "activity_id"
+  ],
+  "type": "object"
+ },
+ "garmin_get_activity_dynamics": {
+  "additionalProperties": false,
+  "properties": {
+   "activity_id": {
+    "description": "ID de la actividad.",
+    "type": "string"
+   }
+  },
+  "required": [
+   "activity_id"
+  ],
+  "type": "object"
+ },
+ "garmin_get_altitude_vitals": {
+  "additionalProperties": false,
+  "properties": {
+   "date": {
+    "anyOf": [
+     {
+      "type": "string"
+     },
+     {
+      "type": "null"
+     }
+    ],
+    "default": null,
+    "description": "Fecha ISO 'YYYY-MM-DD'. Por defecto hoy."
+   }
+  },
+  "type": "object"
+ },
+ "garmin_get_body_battery_events": {
+  "additionalProperties": false,
+  "properties": {
+   "date": {
+    "anyOf": [
+     {
+      "type": "string"
+     },
+     {
+      "type": "null"
+     }
+    ],
+    "default": null,
+    "description": "Fecha ISO 'YYYY-MM-DD'. Por defecto hoy."
+   }
+  },
+  "type": "object"
+ },
+ "garmin_get_body_composition": {
+  "additionalProperties": false,
+  "properties": {
+   "end_date": {
+    "anyOf": [
+     {
+      "type": "string"
+     },
+     {
+      "type": "null"
+     }
+    ],
+    "default": null,
+    "description": "Fecha final ISO 'YYYY-MM-DD'. Por defecto hoy."
+   },
+   "start_date": {
+    "description": "Fecha inicial ISO 'YYYY-MM-DD'.",
+    "type": "string"
+   }
+  },
+  "required": [
+   "start_date"
+  ],
+  "type": "object"
+ },
+ "garmin_get_calendar": {
+  "additionalProperties": false,
+  "properties": {
+   "end_date": {
+    "anyOf": [
+     {
+      "type": "string"
+     },
+     {
+      "type": "null"
+     }
+    ],
+    "default": null,
+    "description": "Fecha final ISO. Por defecto start_date + 13 días. Máx. 62 días."
+   },
+   "include_activities": {
+    "default": true,
+    "description": "Incluir actividades realizadas en el rango.",
+    "type": "boolean"
+   },
+   "start_date": {
+    "anyOf": [
+     {
+      "type": "string"
+     },
+     {
+      "type": "null"
+     }
+    ],
+    "default": null,
+    "description": "Fecha inicial ISO. Por defecto hoy."
+   }
+  },
+  "type": "object"
+ },
+ "garmin_get_daily_summary": {
+  "additionalProperties": false,
+  "properties": {
+   "date": {
+    "anyOf": [
+     {
+      "type": "string"
+     },
+     {
+      "type": "null"
+     }
+    ],
+    "default": null,
+    "description": "Fecha ISO 'YYYY-MM-DD'. Por defecto hoy."
+   }
+  },
+  "type": "object"
+ },
+ "garmin_get_gear": {
+  "additionalProperties": false,
+  "properties": {
+   "activity_id": {
+    "anyOf": [
+     {
+      "type": "string"
+     },
+     {
+      "type": "null"
+     }
+    ],
+    "default": null,
+    "description": "Si se da, devuelve solo el equipo asociado a esa actividad."
+   },
+   "include_retired": {
+    "default": false,
+    "description": "Incluir equipo retirado. Por defecto solo el activo.",
+    "type": "boolean"
+   }
+  },
+  "type": "object"
+ },
+ "garmin_get_hr_curve": {
+  "additionalProperties": false,
+  "properties": {
+   "date": {
+    "anyOf": [
+     {
+      "type": "string"
+     },
+     {
+      "type": "null"
+     }
+    ],
+    "default": null,
+    "description": "Fecha ISO 'YYYY-MM-DD'. Por defecto hoy."
+   }
+  },
+  "type": "object"
+ },
+ "garmin_get_hr_intraday": {
+  "additionalProperties": false,
+  "properties": {
+   "date": {
+    "anyOf": [
+     {
+      "type": "string"
+     },
+     {
+      "type": "null"
+     }
+    ],
+    "default": null,
+    "description": "Fecha ISO 'YYYY-MM-DD'. Por defecto hoy."
+   },
+   "end_hhmm": {
+    "anyOf": [
+     {
+      "type": "string"
+     },
+     {
+      "type": "null"
+     }
+    ],
+    "default": null,
+    "description": "Fin de la ventana en hora local 'HH:MM' (opcional)."
+   },
+   "start_hhmm": {
+    "anyOf": [
+     {
+      "type": "string"
+     },
+     {
+      "type": "null"
+     }
+    ],
+    "default": null,
+    "description": "Inicio de la ventana en hora local 'HH:MM' (opcional)."
+   }
+  },
+  "type": "object"
+ },
+ "garmin_get_hrv": {
+  "additionalProperties": false,
+  "properties": {
+   "date": {
+    "anyOf": [
+     {
+      "type": "string"
+     },
+     {
+      "type": "null"
+     }
+    ],
+    "default": null,
+    "description": "Fecha ISO 'YYYY-MM-DD'. Por defecto hoy."
+   }
+  },
+  "type": "object"
+ },
+ "garmin_get_hrv_detail": {
+  "additionalProperties": false,
+  "properties": {
+   "date": {
+    "anyOf": [
+     {
+      "type": "string"
+     },
+     {
+      "type": "null"
+     }
+    ],
+    "default": null,
+    "description": "Fecha ISO 'YYYY-MM-DD'. Por defecto hoy."
+   }
+  },
+  "type": "object"
+ },
+ "garmin_get_hydration": {
+  "additionalProperties": false,
+  "properties": {
+   "date": {
+    "anyOf": [
+     {
+      "type": "string"
+     },
+     {
+      "type": "null"
+     }
+    ],
+    "default": null,
+    "description": "Fecha ISO 'YYYY-MM-DD'. Por defecto hoy."
+   }
+  },
+  "type": "object"
+ },
+ "garmin_get_last_activity": {
+  "additionalProperties": false,
+  "properties": {},
+  "type": "object"
+ },
+ "garmin_get_menstrual_cycle": {
+  "additionalProperties": false,
+  "properties": {
+   "date": {
+    "anyOf": [
+     {
+      "type": "string"
+     },
+     {
+      "type": "null"
+     }
+    ],
+    "default": null,
+    "description": "Fecha ISO 'YYYY-MM-DD'. Por defecto hoy."
+   }
+  },
+  "type": "object"
+ },
+ "garmin_get_personal_records": {
+  "additionalProperties": false,
+  "properties": {
+   "activity_type": {
+    "default": "running",
+    "description": "'running' (por defecto), 'cycling', 'swimming' o 'all'.",
+    "type": "string"
+   }
+  },
+  "type": "object"
+ },
+ "garmin_get_progress_summary": {
+  "additionalProperties": false,
+  "properties": {
+   "end_date": {
+    "anyOf": [
+     {
+      "type": "string"
+     },
+     {
+      "type": "null"
+     }
+    ],
+    "default": null,
+    "description": "Fecha final ISO 'YYYY-MM-DD'. Por defecto hoy."
+   },
+   "metric": {
+    "default": "distance",
+    "description": "'distance' (por defecto), 'duration' o 'elevationGain'.",
+    "type": "string"
+   },
+   "start_date": {
+    "description": "Fecha inicial ISO 'YYYY-MM-DD'.",
+    "type": "string"
+   }
+  },
+  "required": [
+   "start_date"
+  ],
+  "type": "object"
+ },
+ "garmin_get_readiness_range": {
+  "additionalProperties": false,
+  "properties": {
+   "end_date": {
+    "anyOf": [
+     {
+      "type": "string"
+     },
+     {
+      "type": "null"
+     }
+    ],
+    "default": null,
+    "description": "Fecha final ISO 'YYYY-MM-DD'. Por defecto hoy.\nHasta 366 días (se piden en tramos de 31 días); por encima de 62 días\ndevuelve promedios semanales."
+   },
+   "start_date": {
+    "description": "Fecha inicial ISO 'YYYY-MM-DD'.",
+    "type": "string"
+   }
+  },
+  "required": [
+   "start_date"
+  ],
+  "type": "object"
+ },
+ "garmin_get_skin_temperature": {
+  "additionalProperties": false,
+  "properties": {
+   "end_date": {
+    "anyOf": [
+     {
+      "type": "string"
+     },
+     {
+      "type": "null"
+     }
+    ],
+    "default": null,
+    "description": "Fecha final ISO. Por defecto hoy."
+   },
+   "start_date": {
+    "anyOf": [
+     {
+      "type": "string"
+     },
+     {
+      "type": "null"
+     }
+    ],
+    "default": null,
+    "description": "Fecha inicial ISO. Por defecto 35 días antes de end_date."
+   }
+  },
+  "type": "object"
+ },
+ "garmin_get_sleep": {
+  "additionalProperties": false,
+  "properties": {
+   "date": {
+    "anyOf": [
+     {
+      "type": "string"
+     },
+     {
+      "type": "null"
+     }
+    ],
+    "default": null,
+    "description": "Fecha ISO 'YYYY-MM-DD'. Por defecto hoy."
+   }
+  },
+  "type": "object"
+ },
+ "garmin_get_strength_session": {
+  "additionalProperties": false,
+  "properties": {
+   "activity_id": {
+    "description": "ID de la actividad de fuerza.",
+    "type": "string"
+   }
+  },
+  "required": [
+   "activity_id"
+  ],
+  "type": "object"
+ },
+ "garmin_get_stress": {
+  "additionalProperties": false,
+  "properties": {
+   "date": {
+    "anyOf": [
+     {
+      "type": "string"
+     },
+     {
+      "type": "null"
+     }
+    ],
+    "default": null,
+    "description": "Fecha ISO 'YYYY-MM-DD'. Por defecto hoy."
+   }
+  },
+  "type": "object"
+ },
+ "garmin_get_stress_intraday": {
+  "additionalProperties": false,
+  "properties": {
+   "date": {
+    "anyOf": [
+     {
+      "type": "string"
+     },
+     {
+      "type": "null"
+     }
+    ],
+    "default": null,
+    "description": "Fecha ISO 'YYYY-MM-DD'. Por defecto hoy."
+   },
+   "end_hhmm": {
+    "anyOf": [
+     {
+      "type": "string"
+     },
+     {
+      "type": "null"
+     }
+    ],
+    "default": null,
+    "description": "Fin de la ventana en hora local 'HH:MM' (opcional)."
+   },
+   "start_hhmm": {
+    "anyOf": [
+     {
+      "type": "string"
+     },
+     {
+      "type": "null"
+     }
+    ],
+    "default": null,
+    "description": "Inicio de la ventana en hora local 'HH:MM' (opcional)."
+   }
+  },
+  "type": "object"
+ },
+ "garmin_get_swim_session": {
+  "additionalProperties": false,
+  "properties": {
+   "activity_id": {
+    "description": "ID de la actividad de natación.",
+    "type": "string"
+   }
+  },
+  "required": [
+   "activity_id"
+  ],
+  "type": "object"
+ },
+ "garmin_get_training_calibration": {
+  "additionalProperties": false,
+  "properties": {
+   "date": {
+    "anyOf": [
+     {
+      "type": "string"
+     },
+     {
+      "type": "null"
+     }
+    ],
+    "default": null,
+    "description": "Fecha ISO 'YYYY-MM-DD'. Por defecto hoy."
+   }
+  },
+  "type": "object"
+ },
+ "garmin_get_training_status": {
+  "additionalProperties": false,
+  "properties": {
+   "date": {
+    "anyOf": [
+     {
+      "type": "string"
+     },
+     {
+      "type": "null"
+     }
+    ],
+    "default": null,
+    "description": "Fecha ISO 'YYYY-MM-DD'. Por defecto hoy."
+   }
+  },
+  "type": "object"
+ },
+ "garmin_get_trend": {
+  "additionalProperties": false,
+  "properties": {
+   "end_date": {
+    "anyOf": [
+     {
+      "type": "string"
+     },
+     {
+      "type": "null"
+     }
+    ],
+    "default": null,
+    "description": "Fecha final ISO 'YYYY-MM-DD'. Por defecto hoy."
+   },
+   "metric": {
+    "description": "hrv | sleep | resting_hr | stress | vo2max | spo2 | respiration |\n    skin_temp | body_battery | intensity_minutes | hill_score |\n    endurance_score.",
+    "type": "string"
+   },
+   "resolution": {
+    "default": "auto",
+    "description": "'auto' (diaria hasta 62 días, semanal hasta 400, mensual por\nencima), 'daily', 'weekly' (promedio lunes-domingo) o 'monthly'.\nintensity_minutes y endurance_score siempre son semanales.",
+    "type": "string"
+   },
+   "start_date": {
+    "description": "Fecha inicial ISO 'YYYY-MM-DD'.",
+    "type": "string"
+   }
+  },
+  "required": [
+   "metric",
+   "start_date"
+  ],
+  "type": "object"
+ },
+ "garmin_hrv_analysis": {
+  "additionalProperties": false,
+  "properties": {
+   "date": {
+    "anyOf": [
+     {
+      "type": "string"
+     },
+     {
+      "type": "null"
+     }
+    ],
+    "default": null,
+    "description": "día a evaluar 'YYYY-MM-DD' (por defecto hoy)."
+   },
+   "include_days": {
+    "default": false,
+    "description": "añade las últimas 14 noches (rMSSD y FC en reposo).",
+    "type": "boolean"
+   }
+  },
+  "type": "object"
+ },
+ "garmin_inspect_workout_schema": {
+  "additionalProperties": false,
+  "properties": {
+   "workout_id": {
+    "anyOf": [
+     {
+      "type": "string"
+     },
+     {
+      "type": "null"
+     }
+    ],
+    "default": null,
+    "description": "ID del entrenamiento. Si se omite, lista los disponibles."
+   }
+  },
+  "type": "object"
+ },
+ "garmin_list_activities": {
+  "additionalProperties": false,
+  "properties": {
+   "activity_type": {
+    "anyOf": [
+     {
+      "type": "string"
+     },
+     {
+      "type": "null"
+     }
+    ],
+    "default": null,
+    "description": "Filtro opcional por tipo (p.ej. 'running', 'cycling')."
+   },
+   "limit": {
+    "default": 5,
+    "description": "Número máximo de actividades a devolver (1-50). Por defecto 5.",
+    "type": "integer"
+   }
+  },
+  "type": "object"
+ },
+ "garmin_morning_check": {
+  "additionalProperties": false,
+  "properties": {
+   "date": {
+    "anyOf": [
+     {
+      "type": "string"
+     },
+     {
+      "type": "null"
+     }
+    ],
+    "default": null,
+    "description": "Fecha ISO 'YYYY-MM-DD'. Por defecto hoy."
+   }
+  },
+  "type": "object"
+ },
+ "garmin_schedule_workout": {
+  "additionalProperties": false,
+  "properties": {
+   "date": {
+    "description": "Fecha ISO 'YYYY-MM-DD'.",
+    "type": "string"
+   },
+   "workout_id": {
+    "description": "ID de la plantilla del entrenamiento.",
+    "type": "string"
+   }
+  },
+  "required": [
+   "workout_id",
+   "date"
+  ],
+  "type": "object"
+ },
+ "garmin_search_exercises": {
+  "additionalProperties": false,
+  "properties": {
+   "category": {
+    "anyOf": [
+     {
+      "type": "string"
+     },
+     {
+      "type": "null"
+     }
+    ],
+    "default": null
+   },
+   "limit": {
+    "default": 20,
+    "type": "integer"
+   },
+   "texto": {
+    "type": "string"
+   }
+  },
+  "required": [
+   "texto"
+  ],
+  "type": "object"
+ },
+ "garmin_set_activity_gear": {
+  "additionalProperties": false,
+  "properties": {
+   "action": {
+    "default": "add",
+    "description": "'add' o 'remove'.",
+    "type": "string"
+   },
+   "activity_id": {
+    "description": "ID de la actividad.",
+    "type": "string"
+   },
+   "gear_uuid": {
+    "description": "UUID del equipo.",
+    "type": "string"
+   }
+  },
+  "required": [
+   "activity_id",
+   "gear_uuid"
+  ],
+  "type": "object"
+ },
+ "garmin_unschedule_workout": {
+  "additionalProperties": false,
+  "properties": {
+   "scheduled_id": {
+    "description": "ID de la cita en el calendario.",
+    "type": "string"
+   }
+  },
+  "required": [
+   "scheduled_id"
+  ],
+  "type": "object"
+ },
+ "garmin_validate_exercise": {
+  "additionalProperties": false,
+  "properties": {
+   "category": {
+    "type": "string"
+   },
+   "exercise": {
+    "anyOf": [
+     {
+      "type": "string"
+     },
+     {
+      "type": "null"
+     }
+    ],
+    "default": null
+   }
+  },
+  "required": [
+   "category"
+  ],
+  "type": "object"
+ }
+}
