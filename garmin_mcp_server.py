@@ -168,7 +168,8 @@ mcp = FastMCP(
         "PLANIFICACIÓN: antes de planificar pregunta si hay una carrera próxima. Si la hay, "
         "pide fecha, distancia, objetivo y terreno y arma el plan completo por fases hasta "
         "ella; si no, ajusta semana a semana. Prescribe la intensidad con las 5 zonas de "
-        "FC de Garmin del corredor (hr_zones de garmin_get_training_calibration)."
+        "FC de Garmin del corredor (hr_zones de garmin_get_training_calibration). Si existe "
+        "garmin_coach_guide, llámala al empezar cualquier tarea de coaching y síguela."
     ),
 )
 
@@ -4772,6 +4773,59 @@ def garmin_hrv_analysis(date: Optional[str] = None, include_days: bool = False) 
         return out
     except Exception as e:  # noqa: BLE001
         return _err(e)
+
+
+
+# --------------------------------------------------------------------------- #
+# Guía del coach (solo si el despliegue incluye coach_guide.md)
+# --------------------------------------------------------------------------- #
+# La metodología vive en el servidor: al actualizarla basta con desplegar, sin tocar
+# el skill del cliente. El repositorio público no la incluye y entonces no se registra.
+_GUIDE_FILE = Path(__file__).with_name("coach_guide.md")
+
+if _GUIDE_FILE.exists():
+    def _guide_sections(text: str) -> dict[str, str]:
+        out, cur, buf = {}, "intro", []
+        for line in text.splitlines():
+            if line.startswith("## "):
+                out[cur] = "\n".join(buf).strip()
+                cur, buf = line[3:].strip(), []
+            else:
+                buf.append(line)
+        out[cur] = "\n".join(buf).strip()
+        return {k: v for k, v in out.items() if v}
+
+    @mcp.tool(name="garmin_coach_guide",
+              annotations={"title": "Guía del coach (versión vigente)", **_RO_CYCLE})
+    def garmin_coach_guide(section: Optional[str] = None) -> dict:
+        """Metodología VIGENTE del coach de carrera: análisis de sesiones, clima, readiness
+        por VFC, ciclo, planificación (carrera o semana a semana, 5 zonas de Garmin) y
+        entrenamientos. Llámala al empezar cualquier tarea de coaching y síguela; siempre
+        trae la última versión.
+
+        Args:
+            section: opcional, el título de una sección (p. ej. "Appendix - Planning").
+                Sin él devuelve la guía completa.
+
+        Returns:
+            dict: {"updated", "sections", "text"}.
+        """
+        try:
+            text = _GUIDE_FILE.read_text(encoding="utf-8")
+            secs = _guide_sections(text)
+            updated = datetime.fromtimestamp(_GUIDE_FILE.stat().st_mtime,
+                                             timezone.utc).date().isoformat()
+            if section:
+                hit = next((k for k in secs if k.lower() == section.strip().lower()), None) \
+                    or next((k for k in secs if section.strip().lower() in k.lower()), None)
+                if not hit:
+                    return {"updated": updated, "sections": list(secs),
+                            "error": "Sección no encontrada."}
+                return {"updated": updated, "sections": list(secs),
+                        "text": f"## {hit}\n\n{secs[hit]}"}
+            return {"updated": updated, "sections": list(secs), "text": text}
+        except Exception as e:  # noqa: BLE001
+            return _err(e)
 
 
 # --------------------------------------------------------------------------- #
