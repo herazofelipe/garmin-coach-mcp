@@ -16,3 +16,7 @@ __pycache__/
 # Paid coach method (served only by private deployments): never publish
 coach_guide.md
 skills/garmin-run-coach/
+
+# Patch leftovers
+*.orig
+*.rej
