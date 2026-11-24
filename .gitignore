@@ -12,3 +12,6 @@ __pycache__/
 
 # macOS
 .DS_Store
+
+# Paid coach method (served only by private deployments): never publish
+coach_guide.md
