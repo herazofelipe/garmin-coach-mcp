@@ -128,6 +128,24 @@ def _masked_record(*args, **kwargs):
 
 logging.setLogRecordFactory(_masked_record)
 
+# Skills que el servidor publica por MCP (extensión Skills over MCP, SEP-2640).
+# Cada carpeta de skills/ con un SKILL.md se sirve como skill://<carpeta>/SKILL.md.
+_SKILLS_DIR = Path(__file__).with_name("skills")
+_COACH_SKILL = _SKILLS_DIR / "garmin-run-coach" / "SKILL.md"
+_BASIC_SKILL = _SKILLS_DIR / "garmin-connect-basics" / "SKILL.md"
+
+
+def _skill_hint() -> str:
+    if _COACH_SKILL.exists():
+        return (" Al empezar cualquier tarea de coaching carga el skill "
+                "skill://garmin-run-coach/SKILL.md y síguelo; si tu cliente no carga skills, "
+                "llama a garmin_coach_guide, que trae el mismo método.")
+    if _BASIC_SKILL.exists():
+        return (" Antes de una tarea de coaching lee el skill "
+                "skill://garmin-connect-basics/SKILL.md.")
+    return ""
+
+
 mcp = FastMCP(
     "garmin_mcp",
     instructions=(
@@ -168,8 +186,8 @@ mcp = FastMCP(
         "PLANIFICACIÓN: antes de planificar pregunta si hay una carrera próxima. Si la hay, "
         "pide fecha, distancia, objetivo y terreno y arma el plan completo por fases hasta "
         "ella; si no, ajusta semana a semana. Prescribe la intensidad con las 5 zonas de "
-        "FC de Garmin del corredor (hr_zones de garmin_get_training_calibration). Si existe "
-        "garmin_coach_guide, llámala al empezar cualquier tarea de coaching y síguela."
+        "FC de Garmin del corredor (hr_zones de garmin_get_training_calibration)."
+        + _skill_hint()
     ),
 )
 
@@ -4777,11 +4795,27 @@ def garmin_hrv_analysis(date: Optional[str] = None, include_days: bool = False) 
 
 
 # --------------------------------------------------------------------------- #
-# Guía del coach (solo si el despliegue incluye coach_guide.md)
+# Skills publicados y guía del coach
 # --------------------------------------------------------------------------- #
 # La metodología vive en el servidor: al actualizarla basta con desplegar, sin tocar
-# el skill del cliente. El repositorio público no la incluye y entonces no se registra.
-_GUIDE_FILE = Path(__file__).with_name("coach_guide.md")
+# el cliente. Se publica como skill (Skills over MCP) y, para clientes que aún no
+# cargan skills, también por la herramienta garmin_coach_guide. El repositorio
+# público no incluye el skill del coach y entonces la herramienta no se registra.
+if _SKILLS_DIR.is_dir():
+    from fastmcp.skills.provider import SkillsDirectoryProvider  # noqa: E402
+
+    mcp.add_provider(SkillsDirectoryProvider(_SKILLS_DIR))
+
+_GUIDE_FILE = _COACH_SKILL
+
+
+def _strip_frontmatter(text: str) -> str:
+    if text.startswith("---"):
+        end = text.find("\n---", 3)
+        if end != -1:
+            return text[end + 4:].lstrip("\n")
+    return text
+
 
 if _GUIDE_FILE.exists():
     def _guide_sections(text: str) -> dict[str, str]:
@@ -4811,7 +4845,7 @@ if _GUIDE_FILE.exists():
             dict: {"updated", "sections", "text"}.
         """
         try:
-            text = _GUIDE_FILE.read_text(encoding="utf-8")
+            text = _strip_frontmatter(_GUIDE_FILE.read_text(encoding="utf-8"))
             secs = _guide_sections(text)
             updated = datetime.fromtimestamp(_GUIDE_FILE.stat().st_mtime,
                                              timezone.utc).date().isoformat()

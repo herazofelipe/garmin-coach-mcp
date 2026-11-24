@@ -95,6 +95,11 @@ morning check and the calibration add a short cycle block only when the account 
 Ovulation and fertile-window outputs are wellness estimates: **not a medical device and not a
 contraceptive method.** Sexual-activity entries and free-text notes are never returned.
 
+**Skills over MCP.** The server also publishes a free skill, `garmin-connect-basics`
+(`skills/garmin-connect-basics/SKILL.md`, served as `skill://garmin-connect-basics/SKILL.md`), that
+teaches the agent to use these tools well. Clients that support Skills over MCP load it together
+with the tools; any folder you add under `skills/` with a valid `SKILL.md` is published the same way.
+
 Tool descriptions are in Spanish; Claude answers in your language anyway. What each
 calculation is based on is in [REFERENCES.md](REFERENCES.md).
 
@@ -160,7 +165,8 @@ cuestan $8 en lugar de $10 en el pack
 3. En claude.ai (web) → Ajustes → Conectores → *Agregar conector personalizado* → pega la URL.
 4. Opcional: un monitor gratis de UptimeRobot a `.../health` cada 5 minutos para que no se duerma.
 
-Incluye análisis de VFC frente a tu propio rango normal (`garmin_hrv_analysis`: línea base de 7
+El servidor publica además un skill gratuito por MCP (`garmin-connect-basics`) que le enseña al
+agente a usar bien estas herramientas. Incluye análisis de VFC frente a tu propio rango normal (`garmin_hrv_analysis`: línea base de 7
 días frente a 60 días, FC en reposo, VFC normalizada y variación día a día, con la intensidad
 recomendada para hoy), temperatura de la piel (relojes con sensor Elevate Gen 5; no el Forerunner 965/265) y
 ciclo menstrual (si está activado en Garmin Connect) para organizar entrenamientos por fase y

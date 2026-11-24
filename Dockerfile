@@ -12,6 +12,8 @@ RUN pip install --no-cache-dir "garmin-fit-sdk>=21,<22" \
     && pip uninstall -y garmin-fit-sdk
 
 COPY garmin_mcp_server.py .
+# Skills the server publishes over MCP (skills/<name>/SKILL.md).
+COPY skills ./skills
 
 # Render injects PORT; the server reads it.
 ENV HOST=0.0.0.0
