@@ -109,6 +109,25 @@ class _HideSecretPath(logging.Filter):
 
 logging.getLogger("uvicorn.access").addFilter(_HideSecretPath())
 
+
+# FastMCP también escribe la ruta completa al arrancar ("Starting MCP server ... on
+# http://0.0.0.0:PORT/mcp/<secreto>"). Se enmascara en cualquier registro de log.
+_orig_record_factory = logging.getLogRecordFactory()
+
+
+def _masked_record(*args, **kwargs):
+    rec = _orig_record_factory(*args, **kwargs)
+    if MCP_PATH.rstrip("/") != "/mcp":
+        if isinstance(rec.msg, str) and MCP_PATH in rec.msg:
+            rec.msg = rec.msg.replace(MCP_PATH, "/mcp/***")
+        if isinstance(rec.args, tuple):
+            rec.args = tuple(x.replace(MCP_PATH, "/mcp/***") if isinstance(x, str) else x
+                             for x in rec.args)
+    return rec
+
+
+logging.setLogRecordFactory(_masked_record)
+
 mcp = FastMCP(
     "garmin_mcp",
     instructions=(
@@ -4786,4 +4805,4 @@ if __name__ == "__main__":
     # Visible solo para el dueño del servicio en los logs de Render: es la ruta que
     # va al final de la URL del conector.
     print(f"Conector MCP: https://<tu-servicio>.onrender.com{MCP_PATH}", flush=True)
-    mcp.run(transport="http", host=HOST, port=PORT, path=MCP_PATH)
+    mcp.run(transport="http", host=HOST, port=PORT, path=MCP_PATH, show_banner=False)
