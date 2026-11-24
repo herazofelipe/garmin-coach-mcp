@@ -578,8 +578,9 @@ def _garmin_hr_zones() -> Optional[dict]:
         return {"zones": zones,
                 "from_activity": (a.get("startTimeLocal") or "")[:10] or None,
                 "note": "Zonas configuradas en Garmin (por % de FC máxima, de reserva o de "
-                        "umbral, según el usuario). Lectura aproximada: Z1-Z2 suave, Z3 "
-                        "moderado, Z4 alrededor del umbral, Z5 por encima."}
+                        "umbral, según el usuario). Z1-Z2 suave, Z3 moderado; el trabajo de "
+                        "umbral va alrededor de la FC de umbral (threshold_hr_zone) y el de "
+                        "VO2max por encima."}
     return None
 
 
@@ -2031,6 +2032,13 @@ def garmin_get_training_calibration(date: Optional[str] = None) -> dict:
             out["vo2max"] = {"vo2max_running": ts_v, "as_of": "estado de entrenamiento"}
     _sub("race_predictions", lambda: _fmt_race_predictions(_call("get_race_predictions")))
     _sub("hr_zones", _garmin_hr_zones)
+    lthr = (out.get("lactate_threshold") or {}).get("threshold_hr_bpm")
+    zs = (out.get("hr_zones") or {}).get("zones") or []
+    if isinstance(lthr, (int, float)) and zs:
+        hit = [z["zone"] for z in zs if z["from_bpm"] <= lthr
+               and (z["to_bpm"] is None or lthr <= z["to_bpm"])]
+        if hit:
+            out["hr_zones"]["threshold_hr_zone"] = hit[0]
     _sub("readiness_today", _readiness)
 
     def _cycle_ctx():
