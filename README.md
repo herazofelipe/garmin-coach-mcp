@@ -95,6 +95,12 @@ morning check and the calibration add a short cycle block only when the account 
 Ovulation and fertile-window outputs are wellness estimates: **not a medical device and not a
 contraceptive method.** Sexual-activity entries and free-text notes are never returned.
 
+**Background tasks and delete confirmation.** Long queries (`garmin_get_trend`,
+`garmin_get_readiness_range`, `garmin_hrv_analysis`) run as optional background tasks for clients
+that support MCP tasks (in-memory backend, no Redis); other clients get the normal response.
+Deleting workouts asks the user for confirmation from the server (MCP elicitation), listing the
+workout names; if the client can't show that prompt, the agent must confirm in the chat first.
+
 **Skills over MCP.** The server also publishes a free skill, `garmin-connect-basics`
 (`skills/garmin-connect-basics/SKILL.md`, served as `skill://garmin-connect-basics/SKILL.md`), that
 teaches the agent to use these tools well. Clients that support Skills over MCP load it together
@@ -165,7 +171,7 @@ cuestan $8 en lugar de $10 en el pack
 3. En claude.ai (web) → Ajustes → Conectores → *Agregar conector personalizado* → pega la URL.
 4. Opcional: un monitor gratis de UptimeRobot a `.../health` cada 5 minutos para que no se duerma.
 
-El servidor publica además un skill gratuito por MCP (`garmin-connect-basics`) que le enseña al
+Al borrar entrenamientos, el servidor te pide confirmación (si tu cliente lo permite). El servidor publica además un skill gratuito por MCP (`garmin-connect-basics`) que le enseña al
 agente a usar bien estas herramientas. Incluye análisis de VFC frente a tu propio rango normal (`garmin_hrv_analysis`: línea base de 7
 días frente a 60 días, FC en reposo, VFC normalizada y variación día a día, con la intensidad
 recomendada para hoy), temperatura de la piel (relojes con sensor Elevate Gen 5; no el Forerunner 965/265) y

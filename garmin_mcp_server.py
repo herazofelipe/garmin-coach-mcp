@@ -29,6 +29,7 @@ Autenticación Claude -> servidor:
 from __future__ import annotations
 
 import difflib
+import functools
 import json
 import logging
 import math
@@ -42,7 +43,14 @@ from datetime import date as _date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Optional
 
-from fastmcp import FastMCP
+import anyio
+import mcp_types
+from fastmcp import Context, FastMCP
+
+try:  # Tareas en segundo plano (SEP-2663); opcional: sin el paquete, todo es síncrono.
+    from fastmcp_tasks import TasksExtension
+except ImportError:  # pragma: no cover
+    TasksExtension = None
 from garminconnect import (
     Garmin,
     GarminConnectAuthenticationError,
@@ -164,7 +172,8 @@ mcp = FastMCP(
         "Antes de crear un entrenamiento de fuerza, busca los nombres exactos con "
         "garmin_search_exercises: los nombres inválidos se rechazan. Al corregir un "
         "entrenamiento ya subido, borra el anterior con garmin_delete_workout(s) en vez "
-        "de dejar duplicados (confirma con el usuario antes de borrar).\n\n"
+        "de dejar duplicados. Al borrar, el servidor le pide confirmación al usuario si tu "
+        "cliente lo permite; si no, confírmalo tú en el chat antes de llamar.\n\n"
         "Para trayectorias de varios días (HRV, FC en reposo, sueño, estrés, VO2max, "
         "SpO2, Body Battery, minutos de intensidad) usa garmin_get_trend en vez de "
         "llamar una herramienta diaria repetidas veces. Para MOVER una sesión agendada usa "
@@ -190,6 +199,77 @@ mcp = FastMCP(
         + _skill_hint()
     ),
 )
+
+
+# --------------------------------------------------------------------------- #
+# Tareas en segundo plano y confirmaciones (MCP 2026: SEP-2663 y elicitación)
+# --------------------------------------------------------------------------- #
+# Las consultas largas (tendencias de años, rangos de readiness, análisis de VFC) se
+# registran como tareas OPCIONALES: un cliente que soporta tareas recibe un id y recoge
+# el resultado después; uno que no, recibe la respuesta normal. Backend en memoria
+# (un solo proceso, como en Render).
+_TASKS = TasksExtension is not None
+if _TASKS:
+    mcp.add_extension(TasksExtension())
+
+
+def _bg_tool(**tool_kwargs):
+    """Registra una herramienta lenta como tarea opcional sin tocar la función síncrona
+    (que sigue llamándose igual desde el resto del código y las pruebas)."""
+    def deco(fn):
+        @functools.wraps(fn)
+        async def runner(*args, **kwargs):
+            return await anyio.to_thread.run_sync(functools.partial(fn, *args, **kwargs))
+
+        mcp.tool(task=_TASKS, **tool_kwargs)(runner)
+        return fn
+    return deco
+
+
+_CONFIRM_KEY = "confirm_delete"
+
+
+def _client_can_elicit(ctx: Context) -> bool:
+    try:
+        caps = ctx.session.client_capabilities
+    except Exception:  # noqa: BLE001
+        return False
+    return bool(caps is not None and getattr(caps, "elicitation", None) is not None)
+
+
+async def _confirm(ctx: Context, message: str):
+    """Pide confirmación al usuario desde el servidor.
+
+    Devuelve "si", "no", "sin_soporte" (el cliente no puede preguntar: la confirmación
+    queda en el chat) o, en la primera ronda del protocolo 2026, un InputRequiredResult
+    que la herramienta devuelve tal cual (el cliente pregunta y repite la llamada).
+    Ante cualquier error al preguntar se responde "no": nunca se borra sin respuesta.
+    """
+    if not _client_can_elicit(ctx):
+        return "sin_soporte"
+    try:
+        if ctx._is_modern_protocol():
+            answers = ctx.input_responses
+            if answers and _CONFIRM_KEY in answers:
+                r = answers[_CONFIRM_KEY]
+                content = getattr(r, "content", None) or {}
+                ok = getattr(r, "action", None) == "accept" and content.get("value") is True
+                return "si" if ok else "no"
+            return mcp_types.InputRequiredResult(
+                input_requests={_CONFIRM_KEY: mcp_types.ElicitRequest(
+                    method="elicitation/create",
+                    params=mcp_types.ElicitRequestFormParams(
+                        message=message,
+                        requested_schema={
+                            "type": "object",
+                            "properties": {"value": {"type": "boolean", "title": "Borrar",
+                                                     "default": False}},
+                            "required": ["value"]}))},
+                result_type="input_required")
+        res = await ctx.elicit(message, bool, response_title="Borrar")
+        return "si" if getattr(res, "data", None) is True else "no"
+    except Exception:  # noqa: BLE001
+        return "no"
 
 # --------------------------------------------------------------------------- #
 # Cliente Garmin (singleton perezoso con re-autenticación)
@@ -1176,7 +1256,7 @@ def garmin_morning_check(date: Optional[str] = None) -> dict:
     return out
 
 
-@mcp.tool(
+@_bg_tool(
     name="garmin_get_readiness_range",
     annotations={"title": "Tendencia de readiness (rango)", "readOnlyHint": True,
                  "destructiveHint": False, "idempotentHint": True, "openWorldHint": True},
@@ -2966,16 +3046,47 @@ def _delete_workouts(workout_ids: list) -> dict:
     return {"borrados": ok, "fallidos": fail}
 
 
+def _workout_names(workout_ids: list) -> dict:
+    try:
+        data = _call("get_workouts") or []
+        items = data if isinstance(data, list) else data.get("workoutList", [])
+        names = {str(w.get("workoutId")): w.get("workoutName") for w in items}
+    except Exception:  # noqa: BLE001
+        names = {}
+    return {str(w): names.get(str(w)) for w in workout_ids}
+
+
+async def _confirmed_delete(workout_ids: list, ctx: Context):
+    ids = [str(w) for w in workout_ids]
+    if not ids:
+        return {"borrados": [], "fallidos": [], "error": "No se indicó ningún entrenamiento."}
+    names = await anyio.to_thread.run_sync(_workout_names, ids)
+    lines = "\n".join(f"- {names.get(w) or 'sin nombre'} (id {w})" for w in ids)
+    what = "este entrenamiento" if len(ids) == 1 else f"estos {len(ids)} entrenamientos"
+    answer = await _confirm(
+        ctx, f"¿Borrar de Garmin Connect {what} y su agenda en el reloj? "
+             f"No se puede deshacer.\n{lines}")
+    if isinstance(answer, mcp_types.InputRequiredResult):
+        return answer
+    if answer == "no":
+        return {"borrados": [], "fallidos": [], "cancelado": True,
+                "mensaje": "El usuario no confirmó en el aviso del servidor; no se borró nada."}
+    out = await anyio.to_thread.run_sync(_delete_workouts, ids)
+    out["confirmacion"] = "usuario" if answer == "si" else "chat"
+    return out
+
+
 @mcp.tool(
     name="garmin_delete_workout",
     annotations={"title": "Borrar un entrenamiento", "readOnlyHint": False,
                  "destructiveHint": True, "idempotentHint": True, "openWorldHint": True},
 )
-def garmin_delete_workout(workout_id: str) -> dict:
+async def garmin_delete_workout(workout_id: str, ctx: Context) -> dict:
     """Borra UN entrenamiento de Garmin Connect (y su agenda en el reloj).
     Obtén el workout_id con garmin_inspect_workout_schema sin argumentos.
-    Irreversible: confirma con el usuario antes de llamar."""
-    return _delete_workouts([workout_id])
+    Irreversible: el servidor le pide confirmación al usuario si el cliente lo permite;
+    si no, confírmalo tú en el chat antes de llamar."""
+    return await _confirmed_delete([workout_id], ctx)
 
 
 @mcp.tool(
@@ -2983,10 +3094,11 @@ def garmin_delete_workout(workout_id: str) -> dict:
     annotations={"title": "Borrar varios entrenamientos", "readOnlyHint": False,
                  "destructiveHint": True, "idempotentHint": True, "openWorldHint": True},
 )
-def garmin_delete_workouts(workout_ids: list[str]) -> dict:
+async def garmin_delete_workouts(workout_ids: list[str], ctx: Context) -> dict:
     """Borra VARIOS entrenamientos por id en una sola llamada. Reporta cuáles
-    se borraron y cuáles fallaron. Irreversible: confirma con el usuario antes."""
-    return _delete_workouts(workout_ids)
+    se borraron y cuáles fallaron. Irreversible: el servidor le pide confirmación al
+    usuario si el cliente lo permite; si no, confírmalo tú en el chat antes de llamar."""
+    return await _confirmed_delete(workout_ids, ctx)
 
 
 @mcp.tool(
@@ -3514,7 +3626,7 @@ def garmin_get_personal_records(activity_type: str = "running") -> dict:
         return _err(e)
 
 # ------------------------------------------------------------------ tendencias
-@mcp.tool(name="garmin_get_trend", annotations={"title": "Tendencia de una métrica", **_RO})
+@_bg_tool(name="garmin_get_trend", annotations={"title": "Tendencia de una métrica", **_RO})
 def garmin_get_trend(metric: str, start_date: str, end_date: Optional[str] = None,
                      resolution: str = "auto") -> dict:
     """Serie de UNA métrica en un rango, con resumen (media, mín, máx, primero,
@@ -4621,7 +4733,7 @@ def _hrv_pattern(h: Optional[str], r: Optional[str], ratio: Optional[str],
                       "respuesta al entrenamiento."}
 
 
-@mcp.tool(name="garmin_hrv_analysis",
+@_bg_tool(name="garmin_hrv_analysis",
           annotations={"title": "VFC frente a tu rango normal", **_RO_CYCLE})
 def garmin_hrv_analysis(date: Optional[str] = None, include_days: bool = False) -> dict:
     """Interpreta la VFC (HRV) nocturna y la FC en reposo frente al rango normal del corredor.

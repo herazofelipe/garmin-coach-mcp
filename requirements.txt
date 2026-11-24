@@ -1,3 +1,5 @@
 # Tested with fastmcp 4.2.5 (Skills over MCP) and garminconnect 0.3.16-0.3.20.
 fastmcp>=4.2.5,<4.3
+# Background tasks (SEP-2663), in-memory backend: no Redis needed.
+fastmcp-tasks>=4.2.5,<4.3
 garminconnect>=0.3.16,<0.4
