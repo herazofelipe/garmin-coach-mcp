@@ -1,8 +1,8 @@
 # garmin-coach-mcp
 
 A remote MCP server that connects Claude (or any MCP client) to **your own** Garmin Connect
-account: activities, splits, HR and power zones, aerobic decoupling, HRV, sleep, stress,
-readiness, training status, gear, personal records, session weather, skin temperature and
+account: activities, splits, HR and power zones, aerobic decoupling, HRV against your own
+normal range, sleep, stress, readiness, training status, gear, personal records, session weather, skin temperature and
 menstrual-cycle context for planning training — and it can create,
 schedule and delete running, strength and swim workouts on your watch.
 
@@ -59,12 +59,13 @@ bundle includes the two skills for $8 instead of $10.
 `garmin_login_colab.ipynb` in Google Colab from your phone. Paste the printed value into
 `GARMIN_TOKENS` in Render. Treat it like a password.
 
-## Tools (44)
+## Tools (45)
 
 | Group | Tools |
 |---|---|
 | Activities | list, by date, last, full analysis (summary, laps, workout blocks, zones in minutes, optional weather; compact, ~5-10 KB), compare, progress summary, personal records |
 | Derived metrics | aerobic decoupling Pa:HR / Pw:HR on the active block, cardiac drift, HR recovery, HR curve |
+| HRV analysis | `garmin_hrv_analysis`: 7-day HRV baseline against your 60-day normal range, resting HR, HR-normalized HRV, day-to-day variation and a parasympathetic-saturation check, with a pattern and today's intensity |
 | Daily physiology | morning check, HRV (+detail), sleep, stress, Body Battery events, daily summary, altitude vitals, body composition, hydration |
 | Cycle & skin temperature | nightly skin-temperature deviation with biphasic shift detection, Garmin menstrual-cycle day/phase, `garmin_cycle_insights` (phase, ovulation and fertile-window estimates, evidence-based training considerations) |
 | Trends | `garmin_get_trend` for HRV, sleep, resting HR, stress, VO2max, SpO2, respiration, skin temperature, Body Battery, intensity minutes, hill and endurance score, up to 3 years (long ranges are split into chunks and merged; daily up to 62 days, weekly up to 400, monthly beyond); readiness range up to 366 days |
@@ -77,6 +78,14 @@ bundle includes the two skills for $8 instead of $10.
 weather station, which can be tens of km away. The server also queries Open-Meteo at the run's
 GPS point for the hours nearest start and end, and warns when Garmin's station is > 15 km away.
 
+**HRV analysis.** `garmin_hrv_analysis` reads the last 66 nights and compares your 7-day HRV
+baseline (ln rMSSD) with your own normal range (60-day mean ± 0.5 SD), together with resting HR,
+HR-normalized HRV and day-to-day variation. It returns a pattern (stable, accumulated fatigue,
+major stressor, saturation or fatigue, abnormally high HRV...) and today's intensity. It is
+built for any runner: every number is compared with the runner's own data, never with
+population values. HRV is used mainly to hold back (a high value is not a green light), and
+how the runner feels overrides the data. Methods and sources: [REFERENCES.md](REFERENCES.md).
+
 **Cycle and skin temperature.** Skin temperature needs a watch with Garmin's Elevate Gen 5
 sensor (fēnix 7 Pro/8, epix Pro, Venu 3/4, Venu X1, Forerunner 570/970); the Forerunner 965/265
 don't have it. Cycle data needs cycle tracking turned on in Garmin Connect. The server reads
@@ -86,7 +95,8 @@ morning check and the calibration add a short cycle block only when the account 
 Ovulation and fertile-window outputs are wellness estimates: **not a medical device and not a
 contraceptive method.** Sexual-activity entries and free-text notes are never returned.
 
-Tool descriptions are in Spanish; Claude answers in your language anyway.
+Tool descriptions are in Spanish; Claude answers in your language anyway. What each
+calculation is based on is in [REFERENCES.md](REFERENCES.md).
 
 ## Updating
 
@@ -150,10 +160,13 @@ cuestan $8 en lugar de $10 en el pack
 3. En claude.ai (web) → Ajustes → Conectores → *Agregar conector personalizado* → pega la URL.
 4. Opcional: un monitor gratis de UptimeRobot a `.../health` cada 5 minutos para que no se duerma.
 
-Incluye temperatura de la piel (relojes con sensor Elevate Gen 5; no el Forerunner 965/265) y
+Incluye análisis de VFC frente a tu propio rango normal (`garmin_hrv_analysis`: línea base de 7
+días frente a 60 días, FC en reposo, VFC normalizada y variación día a día, con la intensidad
+recomendada para hoy), temperatura de la piel (relojes con sensor Elevate Gen 5; no el Forerunner 965/265) y
 ciclo menstrual (si está activado en Garmin Connect) para organizar entrenamientos por fase y
 síntomas. Las estimaciones de ovulación y ventana fértil son orientativas: no es un dispositivo
-médico ni un método anticonceptivo.
+médico ni un método anticonceptivo. Las referencias de cada cálculo están en
+[REFERENCES.md](REFERENCES.md).
 
 Si tu cuenta usa verificación en dos pasos, genera `GARMIN_TOKENS` con
 `garmin_login_colab.ipynb` (Google Colab, funciona desde el celular).

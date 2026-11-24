@@ -138,7 +138,13 @@ mcp = FastMCP(
         "respuesta individual (no reprogramar por calendario), más cuidado con el calor en la "
         "fase lútea y leer HRV/FC en reposo frente a la misma fase de ciclos previos. Las "
         "predicciones de ovulación y ventana fértil son orientativas: nunca las presentes como "
-        "método anticonceptivo ni como diagnóstico."
+        "método anticonceptivo ni como diagnóstico.\n\n"
+        "VFC (HRV): antes de una sesión de calidad o al planificar la semana, llama a "
+        "garmin_hrv_analysis y decide por su patrón: línea base de 7 días frente al rango "
+        "normal del propio corredor, nunca por una noche suelta ni por valores de población. "
+        "La VFC sirve sobre todo para frenar (una VFC alta no es luz verde), se ajusta la "
+        "intensidad más que el volumen suave, y si las sensaciones del corredor contradicen "
+        "los datos, mandan las sensaciones."
     ),
 )
 
@@ -4324,6 +4330,389 @@ def garmin_cycle_insights(date: Optional[str] = None, lookback_days: int = 60) -
     if not out["_notes"]:
         out.pop("_notes")
     return out
+
+
+# --------------------------------------------------------------------------- #
+# Análisis de VFC (HRV) frente al rango normal personal
+# --------------------------------------------------------------------------- #
+# Método (ver HRV_REFERENCES):
+#  - ln rMSSD de la VFC nocturna de Garmin (la transformación logarítmica reduce la
+#    heterocedasticidad; AIS 2023).
+#  - Línea base = media de 7 días (≥3 noches; Plews 2012/2013, AIS 2023).
+#  - Rango normal = media de los últimos 60 días ± 0,5 DE (Vesterinen 2016: media ±
+#    0,5·DE; AIS 2023: 60 días y SWC = 0,5·CV). Provisional con menos de 42 noches.
+#  - FC en reposo con la misma lógica; VFC normalizada = ln rMSSD / RR (s)
+#    (Buchheit 2014; Plews 2017); CV de 7 días del ln rMSSD (Plews 2012).
+#  - Correlación ln rMSSD–RR en 2 y 6 semanas para la saturación parasimpática
+#    (Plews 2017; Altini).
+# Se interpreta la TENDENCIA (línea base), no la noche suelta, y las sensaciones
+# mandan sobre los datos (Alfonso 2025). La VFC sirve sobre todo para frenar.
+
+HRV_RANGE_DAYS = 60
+HRV_BASE_DAYS = 7
+HRV_MIN_WEEK = 3          # noches mínimas en 7 días para una línea base válida
+HRV_MIN_RANGE = 21        # noches mínimas para un rango normal
+HRV_FULL_RANGE = 42       # por debajo, el rango es provisional
+HRV_SWC_SD = 0.5          # ancho del rango: media ± 0,5 DE
+HRV_CV_SD = 1.0           # CV "alto" o "bajo": ± 1 DE de sus propios valores (sin consenso)
+HRV_SAT_R = 0.2           # correlación ln rMSSD–RR por debajo de esto: posible saturación
+HRV_FAR_SD = 1.0          # por encima de media + 1 DE: VFC anormalmente alta (no solo alta)
+HRV_DISCLAIMER = (
+    "Indicadores de entrenamiento, no un dispositivo médico. La VFC nocturna de muñeca "
+    "tiene error frente al ECG: usa la tendencia frente a tu propio rango, no el valor "
+    "absoluto ni comparaciones con otras personas.")
+HRV_REFERENCES = [
+    "Kiviniemi AM et al. Eur J Appl Physiol 2007;101:743-51. doi:10.1007/s00421-007-0552-2",
+    "Plews DJ et al. Eur J Appl Physiol 2012;112:3729-41. doi:10.1007/s00421-012-2354-4",
+    "Plews DJ et al. Sports Med 2013;43:773-81. doi:10.1007/s40279-013-0071-8",
+    "Le Meur Y et al. Med Sci Sports Exerc 2013;45:2061-71. "
+    "doi:10.1249/MSS.0b013e3182980125",
+    "Buchheit M. Front Physiol 2014;5:73. doi:10.3389/fphys.2014.00073",
+    "Vesterinen V et al. Med Sci Sports Exerc 2016;48:1347-54. "
+    "doi:10.1249/MSS.0000000000000910",
+    "Plews DJ et al. Int J Sports Physiol Perform 2017;12:697-703. "
+    "doi:10.1123/ijspp.2016-0343",
+    "Javaloyes A et al. Int J Sports Physiol Perform 2019;14:23-32. "
+    "doi:10.1123/ijspp.2018-0122",
+    "Hautala AJ et al. Am J Physiol Heart Circ Physiol 2003;285:H1747-52. "
+    "doi:10.1152/ajpheart.00202.2003",
+    "Bellenger C et al. AIS Best Practice Guidelines: resting HR and HRV in athletes, 2023",
+    "Bulte KR et al. Int J Sports Physiol Perform 2025;20:918-24. "
+    "doi:10.1123/ijspp.2024-0362",
+    "Alfonso C et al. Sci Rep 2025;15:34023. doi:10.1038/s41598-025-13540-z",
+    "Dial MB et al. Physiol Rep 2025;13:e70527. doi:10.14814/phy2.70527",
+    "Altini M. HRV4Training (hrv4training.substack.com): rango normal, VFC normalizada, CV",
+]
+
+
+def _mean_sd(vals: list[float]) -> tuple[Optional[float], Optional[float]]:
+    n = len(vals)
+    if n == 0:
+        return None, None
+    m = sum(vals) / n
+    if n < 2:
+        return m, None
+    return m, math.sqrt(sum((v - m) ** 2 for v in vals) / (n - 1))
+
+
+def _pearson(xs: list[float], ys: list[float]) -> Optional[float]:
+    n = len(xs)
+    if n < 3:
+        return None
+    mx, my = sum(xs) / n, sum(ys) / n
+    sxy = sum((x - mx) * (y - my) for x, y in zip(xs, ys))
+    sxx = sum((x - mx) ** 2 for x in xs)
+    syy = sum((y - my) ** 2 for y in ys)
+    if sxx <= 0 or syy <= 0:
+        return None
+    return sxy / math.sqrt(sxx * syy)
+
+
+def _band(vals: list[float], k: float = HRV_SWC_SD) -> Optional[dict]:
+    m, sd = _mean_sd(vals)
+    if m is None or sd is None:
+        return None
+    return {"mean": m, "sd": sd, "low": m - k * sd, "high": m + k * sd, "n": len(vals)}
+
+
+def _where(v: Optional[float], band: Optional[dict]) -> Optional[str]:
+    if v is None or not band:
+        return None
+    return "below" if v < band["low"] else "above" if v > band["high"] else "within"
+
+
+def _window(series: dict[str, float], end: _date, days: int) -> list[float]:
+    return [series[d] for d in _days(end - timedelta(days=days - 1), end) if d in series]
+
+
+def _hrv_inputs(d0: _date, d1: _date) -> tuple[dict, dict, dict]:
+    """Series por fecha: ln rMSSD, FC en reposo y valores de Garmin (estado y banda)."""
+    hrv, _ = _daily_series("hrv", d0, d1)
+    rhr, _ = _daily_series("resting_hr", d0, d1)
+    ln = {d: math.log(r["last_night_avg"]) for d, r in hrv.items()
+          if isinstance(r.get("last_night_avg"), (int, float)) and r["last_night_avg"] > 0}
+    hr = {d: float(r["resting_hr"]) for d, r in rhr.items()
+          if isinstance(r.get("resting_hr"), (int, float)) and 25 <= r["resting_hr"] <= 120}
+    return ln, hr, hrv
+
+
+def _hrv_pattern(h: Optional[str], r: Optional[str], ratio: Optional[str],
+                 cv: Optional[str], sat: bool, rhr_low_side: bool,
+                 far_above: bool = False) -> dict:
+    """Patrón e indicación para el día (Buchheit 2014, tabla 2; Plews 2012/2017; Altini)."""
+    if h is None:
+        if r == "above":
+            return {"pattern": "fc_reposo_alta",
+                    "meaning": "FC en reposo por encima de tu rango: suele anticipar un estrés "
+                               "grande (enfermedad, mal sueño, alcohol, viaje, calor).",
+                    "intensity": "cautela",
+                    "advice": "Sin VFC disponible: si además te sientes mal, cambia la calidad "
+                              "por rodaje suave."}
+        return {"pattern": "sin_vfc",
+                "meaning": "No hay VFC suficiente; la FC en reposo está en tu rango."
+                if r == "within" else "No hay datos suficientes para un patrón.",
+                "intensity": "según plan y sensaciones",
+                "advice": "Decide por sensaciones; la FC en reposo sola es menos sensible."}
+    if h == "below" and r == "above":
+        return {"pattern": "estres_grande",
+                "meaning": "VFC baja con FC en reposo alta: estrés importante (enfermedad, "
+                           "mal sueño, alcohol, viaje, calor no habitual o carga excesiva).",
+                "intensity": "solo suave o descanso",
+                "advice": "Sin sesiones de calidad hasta que la línea base vuelva al rango. "
+                          "Revisa síntomas; si hay fiebre o malestar, descanso."}
+    if h == "below" and sat:
+        return {"pattern": "saturacion_o_fatiga",
+                "meaning": "VFC baja con FC en reposo baja y poca relación entre ambas: puede "
+                           "ser saturación parasimpática (habitual en bloques de mucho "
+                           "volumen; no es mala señal) o fatiga (p. ej. déficit calórico, "
+                           "frío, bloque muy denso).",
+                "intensity": "según sensaciones",
+                "advice": "Si rindes y te sientes bien, sigue el plan. Si no, cambia la "
+                          "calidad por suave. Una medición matinal sentado con banda de "
+                          "pecho distingue mejor ambos casos."}
+    if h == "below":
+        resp = (" La variabilidad día a día ha subido: el sistema aún responde al estímulo."
+                if cv == "high" else
+                " Con poca variabilidad día a día: supresión sostenida; vigílala."
+                if cv in ("within", "low") else "")
+        return {"pattern": "fatiga_acumulada",
+                "meaning": "Línea base de VFC por debajo de tu rango: es poco probable que "
+                           "asimiles más intensidad ahora." + resp,
+                "intensity": "sin intensidad",
+                "advice": "Cambia las sesiones de intensidad por rodaje suave (si empiezas a "
+                          "correr, un día libre) hasta que la línea base vuelva al rango. El "
+                          "volumen suave suele tolerarse si te sientes bien."}
+    if h == "above" and r == "above":
+        return {"pattern": "vfc_alta_fc_alta",
+                "meaning": "VFC y FC en reposo por encima de tu rango: patrón poco común. Al "
+                           "inicio de un bloque tras una fase de mucha carga puede indicar "
+                           "frescura; en otro contexto, fatiga acumulada.",
+                "intensity": "sin añadir carga",
+                "advice": "Decide por sensaciones y contexto; no añadas sesiones ni "
+                          "intensidad hasta que vuelva al rango."}
+    if h == "above" and r == "below" and not far_above:
+        return {"pattern": "asimilando_bien",
+                "meaning": "VFC algo por encima de tu rango con FC en reposo baja: patrón "
+                           "habitual cuando se asimila bien el entrenamiento.",
+                "intensity": "según plan",
+                "advice": "Sigue el plan; no añadas carga por este dato."}
+    if h == "above" and r == "below":
+        return {"pattern": "vfc_anormalmente_alta",
+                "meaning": "VFC por encima de tu rango con FC en reposo baja: tras un estrés "
+                           "grande (carrera, accidente, bloque duro) suele ser el cuerpo "
+                           "recuperándose, no una señal de estar fresco; también puede ser "
+                           "sobrecarga funcional.",
+                "intensity": "sin añadir carga",
+                "advice": "No lo tomes como luz verde. Sigue el plan sin añadir sesiones ni "
+                          "intensidad y vuelve a mirar en 2-3 días."}
+    if h == "above":
+        return {"pattern": "vfc_alta_estable",
+                "meaning": "VFC por encima de tu rango con FC en reposo normal: suele "
+                           "acompañarse de buenas sensaciones.",
+                "intensity": "según plan",
+                "advice": "Sigue el plan; no añadas carga por un solo dato. Si vienes de una "
+                          "carrera o de un bloque muy duro, trátalo con cautela."}
+    if r == "above":
+        return {"pattern": "fc_reposo_alta",
+                "meaning": "VFC en rango pero FC en reposo alta: la FC suele ser la primera "
+                           "en reaccionar a estresores grandes (enfermedad, alcohol, viaje).",
+                "intensity": "cautela",
+                "advice": "Haz el plan con cautela; si además te sientes mal, cambia la "
+                          "calidad por suave."}
+    if ratio == "below" and rhr_low_side:
+        return {"pattern": "vfc_normalizada_baja",
+                "meaning": "FC en reposo bajando sin que la VFC suba (VFC normalizada baja): "
+                           "puede ser fatiga que la VFC sola no muestra (déficit calórico, "
+                           "frío, bloque denso) o saturación si llevas mucho volumen.",
+                "intensity": "según sensaciones",
+                "advice": "No añadas intensidad; si hay déficit calórico o un bloque denso, "
+                          "prioriza recuperación."}
+    if cv == "high":
+        return {"pattern": "inestable",
+                "meaning": "VFC en rango pero con más variación día a día de lo habitual: te "
+                           "cuesta volver a tu normalidad entre sesiones (picos de carga, mal "
+                           "sueño, estrés).",
+                "intensity": "según plan, sin añadir carga",
+                "advice": "Sigue el plan sin añadir carga; si la línea base empieza a bajar, "
+                          "quita intensidad."}
+    return {"pattern": "estable",
+            "meaning": "VFC y FC en reposo en tu rango y estables: estás asimilando la carga.",
+            "intensity": "según plan",
+            "advice": "Sigue el plan. Si sigues así al empezar un bloque de carga, es buen "
+                      "momento para hacerlo: una VFC base alta y estable se asocia a mejor "
+                      "respuesta al entrenamiento."}
+
+
+@mcp.tool(name="garmin_hrv_analysis",
+          annotations={"title": "VFC frente a tu rango normal", **_RO_CYCLE})
+def garmin_hrv_analysis(date: Optional[str] = None, include_days: bool = False) -> dict:
+    """Interpreta la VFC (HRV) nocturna y la FC en reposo frente al rango normal del corredor.
+
+    Úsala antes de una sesión de calidad, al planificar la semana o cuando la VFC "baja"
+    preocupa. Calcula con los últimos 66 días: línea base de 7 días (ln rMSSD) frente al
+    rango normal de 60 días (media ± 0,5 DE), FC en reposo con la misma lógica, VFC
+    normalizada por la FC (ln rMSSD / RR), coeficiente de variación de 7 días y la
+    correlación VFC–RR (saturación parasimpática). Devuelve un patrón (estable, fatiga
+    acumulada, estrés grande, saturación o fatiga, VFC anormalmente alta, inestable...)
+    con la intensidad recomendada para hoy.
+
+    Reglas: decide por la línea base, no por una noche suelta; la VFC sirve sobre todo
+    para frenar (una VFC alta no es luz verde); si las sensaciones contradicen los datos,
+    mandan las sensaciones. Sirve para cualquier nivel: cada métrica se compara con el
+    propio rango del corredor, nunca con valores de población.
+
+    Args:
+        date: día a evaluar 'YYYY-MM-DD' (por defecto hoy).
+        include_days: añade las últimas 14 noches (rMSSD y FC en reposo).
+
+    Returns:
+        dict: {"date", "pattern", "meaning", "intensity_today", "advice", "hrv",
+               "resting_hr", "normalized_hrv", "cv", "saturation_check", "garmin",
+               "ask_the_runner", "data_quality", "references", "disclaimer"}.
+    """
+    try:
+        d1 = _iso(date) if date else _iso(_today())
+        d0 = d1 - timedelta(days=HRV_RANGE_DAYS + HRV_BASE_DAYS - 2)
+        ln, hr, raw = _hrv_inputs(d0, d1)
+        rr = {d: 60.0 / v for d, v in hr.items()}                     # RR medio en s
+        ratio = {d: ln[d] / rr[d] for d in ln if d in rr}
+
+        # --- VFC: línea base de 7 días frente al rango de 60
+        base_vals = _window(ln, d1, HRV_BASE_DAYS)
+        range_vals = _window(ln, d1, HRV_RANGE_DAYS)
+        band = _band(range_vals) if len(range_vals) >= HRV_MIN_RANGE else None
+        base = sum(base_vals) / len(base_vals) if len(base_vals) >= HRV_MIN_WEEK else None
+        h_status = _where(base, band)
+        today_ln = ln.get(d1.isoformat())
+        prev_ln = ln.get((d1 - timedelta(days=1)).isoformat())
+
+        def ms(x):
+            return round(math.exp(x)) if x is not None else None
+
+        hrv_out: dict[str, Any] = {
+            "baseline_7d_ms": ms(base), "baseline_7d_ln": round(base, 2) if base else None,
+            "nights_in_7d": len(base_vals), "nights_in_60d": len(range_vals),
+            "normal_range_ms": [ms(band["low"]), ms(band["high"])] if band else None,
+            "normal_range_ln": [round(band["low"], 2), round(band["high"], 2)] if band else None,
+            "status": h_status,
+            "last_night_ms": ms(today_ln),
+            "last_night_vs_range": _where(today_ln, band),
+        }
+        if band and band["n"] < HRV_FULL_RANGE:
+            hrv_out["range_note"] = (f"Rango provisional ({band['n']} noches): mejora con 6 "
+                                     "semanas de datos.")
+        if len(range_vals) < HRV_MIN_RANGE:
+            hrv_out["range_note"] = (f"Construyendo tu rango: {len(range_vals)} de "
+                                     f"{HRV_MIN_RANGE} noches mínimas. Mientras tanto, "
+                                     "decide por sensaciones y FC en reposo.")
+        if (h_status == "within" and today_ln is not None and band
+                and today_ln < band["low"]):
+            two = prev_ln is not None and prev_ln < band["low"]
+            hrv_out["acute_note"] = (
+                "Dos noches seguidas por debajo del rango: si te sientes mal, quita la "
+                "intensidad hoy." if two else
+                "Una noche baja aislada: no cambia el plan si te sientes bien; si se repite "
+                "mañana, quita la intensidad.")
+
+        # --- FC en reposo
+        hr_band = _band(_window(hr, d1, HRV_RANGE_DAYS)) \
+            if len(_window(hr, d1, HRV_RANGE_DAYS)) >= HRV_MIN_RANGE else None
+        hr_week = _window(hr, d1, HRV_BASE_DAYS)
+        hr_base = sum(hr_week) / len(hr_week) if len(hr_week) >= HRV_MIN_WEEK else None
+        r_status = _where(hr_base, hr_band)
+        rhr_out = {"baseline_7d": round(hr_base, 1) if hr_base else None,
+                   "normal_range": [round(hr_band["low"], 1), round(hr_band["high"], 1)]
+                   if hr_band else None,
+                   "status": r_status, "today": hr.get(d1.isoformat())}
+
+        # --- VFC normalizada (ln rMSSD / RR en s)
+        rb = _band(_window(ratio, d1, HRV_RANGE_DAYS)) \
+            if len(_window(ratio, d1, HRV_RANGE_DAYS)) >= HRV_MIN_RANGE else None
+        rw = _window(ratio, d1, HRV_BASE_DAYS)
+        rbase = sum(rw) / len(rw) if len(rw) >= HRV_MIN_WEEK else None
+        ratio_status = _where(rbase, rb)
+        norm_out = {"baseline_7d": round(rbase, 3) if rbase else None,
+                    "normal_range": [round(rb["low"], 3), round(rb["high"], 3)] if rb else None,
+                    "status": ratio_status,
+                    "note": "ln rMSSD dividido por el intervalo RR medio (s) derivado de la FC "
+                            "en reposo diaria de Garmin; aproximación a la de Buchheit."}
+
+        # --- CV de 7 días y su rango propio
+        def cv_at(end: _date) -> Optional[float]:
+            w = _window(ln, end, HRV_BASE_DAYS)
+            if len(w) < 4:
+                return None
+            m, sd = _mean_sd(w)
+            return sd / m * 100 if m and sd is not None else None
+
+        cv_now = cv_at(d1)
+        cv_hist = [c for c in (cv_at(d1 - timedelta(days=k))
+                               for k in range(HRV_BASE_DAYS, HRV_RANGE_DAYS)) if c is not None]
+        cv_band = _band(cv_hist, HRV_CV_SD) if len(cv_hist) >= HRV_MIN_RANGE else None
+        cv_status = ({"below": "low", "above": "high", "within": "within"}
+                     .get(_where(cv_now, cv_band)))
+        cv_out = {"cv_7d_pct": round(cv_now, 1) if cv_now is not None else None,
+                  "usual_range_pct": [round(cv_band["low"], 1), round(cv_band["high"], 1)]
+                  if cv_band else None,
+                  "status": cv_status,
+                  "note": "Variación día a día de la VFC. Sin umbral consensuado: se compara "
+                          "con tus propios valores (± 1 DE)."}
+
+        # --- Correlación ln rMSSD–RR (saturación)
+        def corr(days: int) -> Optional[float]:
+            ds = [d for d in _days(d1 - timedelta(days=days - 1), d1) if d in ln and d in rr]
+            if len(ds) < max(10, days // 2):
+                return None
+            r = _pearson([ln[d] for d in ds], [rr[d] for d in ds])
+            return round(r, 2) if r is not None else None
+
+        r14, r42 = corr(14), corr(42)
+        rhr_low_side = bool(hr_base and hr_band and hr_base <= hr_band["mean"])
+        weak = [x for x in (r14, r42) if x is not None]
+        sat = (h_status == "below" and rhr_low_side and ratio_status == "below"
+               and bool(weak) and min(weak) < HRV_SAT_R)
+        sat_out = {"corr_ln_rmssd_rr_2wk": r14, "corr_ln_rmssd_rr_6wk": r42,
+                   "plausible": sat,
+                   "note": "Correlación positiva = normal. Cercana a cero o negativa con VFC "
+                           "baja y FC baja: posible saturación parasimpática."}
+
+        far = bool(band and base is not None
+                   and base > band["mean"] + HRV_FAR_SD * band["sd"])
+        pat = _hrv_pattern(h_status, r_status, ratio_status, cv_status, sat, rhr_low_side,
+                           far)
+        last = raw.get(d1.isoformat()) or {}
+        out: dict[str, Any] = {
+            "date": d1.isoformat(),
+            "pattern": pat["pattern"], "meaning": pat["meaning"],
+            "intensity_today": pat["intensity"], "advice": pat["advice"],
+            "hrv": hrv_out, "resting_hr": rhr_out, "normalized_hrv": norm_out, "cv": cv_out,
+            "saturation_check": sat_out,
+            "garmin": {"hrv_status": last.get("status"),
+                       "balanced_range_ms": [last.get("balanced_low"),
+                                             last.get("balanced_upper")]
+                       if last.get("balanced_low") else None},
+            "ask_the_runner": ["¿Cómo dormiste?", "¿Fatiga o dolor muscular?",
+                               "¿Estrés fuera del entrenamiento, viaje o enfermedad?",
+                               "¿Ganas de entrenar?"],
+            "rules": ["Decide por la línea base de 7 días, no por una noche.",
+                      "La VFC sirve para frenar: una VFC alta no es luz verde.",
+                      "Si las sensaciones contradicen los datos, mandan las sensaciones.",
+                      "Se ajusta sobre todo la intensidad, no el volumen suave."],
+            "data_quality": ("VFC nocturna de sensor óptico de muñeca: útil para tendencias "
+                             "propias, con error frente al ECG. Para decisiones finas, una "
+                             "medición de 1-5 min al despertar, sentado y con banda de pecho, "
+                             "es más fiable."),
+            "references": HRV_REFERENCES,
+            "disclaimer": HRV_DISCLAIMER,
+        }
+        if include_days:
+            out["last_14_nights"] = [
+                {"date": d, "rmssd_ms": round(math.exp(ln[d])) if d in ln else None,
+                 "resting_hr": hr.get(d)}
+                for d in _days(d1 - timedelta(days=13), d1)]
+        return out
+    except Exception as e:  # noqa: BLE001
+        return _err(e)
 
 
 # --------------------------------------------------------------------------- #
