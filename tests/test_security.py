@@ -217,3 +217,45 @@ def test_dependencies_are_pinned_with_hashes():
     assert pkgs, "requirements.txt is empty"
     assert all("==" in ln for ln in pkgs), "every dependency must be pinned with =="
     assert "--hash=sha256:" in req, "requirements.txt must carry hashes"
+
+
+# --------------------------------------------------------------------------- #
+# Rejected login: pause instead of hammering Garmin, and say why
+# --------------------------------------------------------------------------- #
+def test_login_pauses_after_rejection_and_reports_cause(m, monkeypatch):
+    attempts = []
+
+    def build(force_credentials=False):
+        attempts.append(force_credentials)
+        try:
+            raise RuntimeError("429 Too Many Requests")
+        except RuntimeError as inner:
+            raise m.GarminConnectAuthenticationError("Failed to retrieve social profile") from inner
+
+    monkeypatch.setattr(m, "_client", None)
+    monkeypatch.setattr(m, "_build_client", build)
+    monkeypatch.setattr(m, "_login_paused_until", 0.0)
+    monkeypatch.setattr(m, "_login_pause_reason", "")
+
+    with pytest.raises(m.GarminConnectAuthenticationError) as first:
+        m._call("get_x")
+    out = m._err(first.value)
+    assert "429" in out["error"] and "429" in out["detail"]
+
+    for _ in range(5):                      # every later call stays off Garmin
+        with pytest.raises(m.GarminConnectAuthenticationError) as later:
+            m._call("get_x")
+    assert len(attempts) == 1
+    assert "pausa" in m._err(later.value)["error"]
+
+
+def test_login_pause_ends_and_success_clears_it(m, monkeypatch):
+    class Fresh:
+        def get_x(self):
+            return "ok"
+
+    monkeypatch.setattr(m, "_client", None)
+    monkeypatch.setattr(m, "_build_client", lambda force_credentials=False: Fresh())
+    monkeypatch.setattr(m, "_login_paused_until", 0.0)   # pause already over
+    assert m._call("get_x") == "ok"
+    assert m._login_paused_until == 0.0

@@ -36,6 +36,7 @@ import math
 import os
 import re
 import threading
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -320,11 +321,49 @@ def _build_client(force_credentials: bool = False) -> Garmin:
     )
 
 
+# Pausa de inicio de sesión: si Garmin rechaza un login, no se vuelve a intentar durante
+# unos minutos. Cada intento fallido alarga los bloqueos de Garmin (429 / cuenta en
+# pausa); insistir solo empeora. Mientras dura la pausa, las herramientas responden
+# con un error claro sin tocar Garmin.
+_LOGIN_PAUSE_S = 10 * 60
+_login_paused_until = 0.0
+_login_pause_reason = ""
+
+
+def _login(force_credentials: bool = False) -> Garmin:
+    """_build_client con pausa tras un fallo (llamar con _lock tomado)."""
+    global _login_paused_until, _login_pause_reason
+    left = _login_paused_until - time.monotonic()
+    if left > 0:
+        raise GarminConnectAuthenticationError(
+            f"Inicio de sesión en pausa {max(1, round(left / 60))} min más tras un rechazo de "
+            f"Garmin ({_login_pause_reason}). Se reintenta solo al terminar la pausa.")
+    try:
+        client = _build_client(force_credentials=force_credentials)
+    except Exception as exc:
+        _login_paused_until = time.monotonic() + _LOGIN_PAUSE_S
+        _login_pause_reason = _cause_text(exc)[:160]
+        raise
+    _login_paused_until, _login_pause_reason = 0.0, ""
+    return client
+
+
+def _cause_text(exc: BaseException) -> str:
+    """El error con sus causas encadenadas (p. ej. '... <- 429 Too Many Requests'),
+    limpio de datos sensibles: distingue un bloqueo de Garmin de una contraseña mala."""
+    parts, seen = [], set()
+    while exc is not None and id(exc) not in seen and len(parts) < 4:
+        seen.add(id(exc))
+        parts.append(f"{type(exc).__name__}: {exc}")
+        exc = exc.__cause__ or exc.__context__
+    return _scrub(" <- ".join(parts))
+
+
 def _get_client() -> Garmin:
     global _client
     with _lock:
         if _client is None:
-            _client = _build_client()
+            _client = _login()
         return _client
 
 
@@ -347,7 +386,7 @@ def _call(method: str, *args, **kwargs) -> Any:
             # Solo el primer hilo que ve el fallo vuelve a iniciar sesión; los demás
             # reutilizan el cliente nuevo (evita ráfagas de login que bloquean la cuenta).
             if _client is stale or _client is None:
-                _client = _build_client(force_credentials=True)
+                _client = _login(force_credentials=True)
             fresh = _client
         return getattr(fresh, method)(*args, **kwargs)
 
@@ -377,10 +416,19 @@ def _err(e: Exception) -> dict:
     if isinstance(e, ValueError):
         return {"error": _scrub(e)}
     if isinstance(e, GarminConnectAuthenticationError):
-        return {"error": "Autenticación con Garmin fallida incluso tras intentar "
-                          "re-login. Verifica GARMIN_EMAIL/GARMIN_PASSWORD (o regenera "
-                          "GARMIN_TOKENS) en las variables de entorno del servidor.",
-                "detail": _scrub(e)}
+        cause = _cause_text(e)
+        if "en pausa" in cause:
+            return {"error": "Garmin rechazó hace poco el inicio de sesión y el servidor está "
+                              "en pausa para no bloquear la cuenta. Espera unos minutos.",
+                    "detail": cause}
+        if any(k in cause for k in ("429", "Too Many", "TooMany", "rate")):
+            return {"error": "Garmin está limitando los inicios de sesión (429). No es la "
+                              "contraseña: espera (a veces hasta una hora) sin reintentar.",
+                    "detail": cause}
+        return {"error": "Autenticación con Garmin fallida incluso tras intentar re-login. "
+                          "Revisa el detalle: si no es un bloqueo temporal, verifica "
+                          "GARMIN_EMAIL/GARMIN_PASSWORD (o GARMIN_TOKENS) en el servidor.",
+                "detail": cause}
     if isinstance(e, GarminConnectTooManyRequestsError):
         return {"error": "Garmin respondió 429 (demasiadas solicitudes). Espera unos "
                           "minutos antes de reintentar.", "detail": _scrub(e)}
