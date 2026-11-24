@@ -70,7 +70,7 @@ bundle includes the two skills for $8 instead of $10.
 | Cycle & skin temperature | nightly skin-temperature deviation with biphasic shift detection, Garmin menstrual-cycle day/phase, `garmin_cycle_insights` (phase, ovulation and fertile-window estimates, evidence-based training considerations) |
 | Trends | `garmin_get_trend` for HRV, sleep, resting HR, stress, VO2max, SpO2, respiration, skin temperature, Body Battery, intensity minutes, hill and endurance score, up to 3 years (long ranges are split into chunks and merged; daily up to 62 days, weekly up to 400, monthly beyond); readiness range up to 366 days |
 | Intraday | heart rate and stress for a time window |
-| Status | training status (load, ACWR, load balance, acclimation, race predictions), calibration (LTHR, threshold pace/power, VO2max) |
+| Status | training status (load, ACWR, load balance, acclimation, race predictions), calibration (LTHR, threshold pace/power, VO2max, the runner's 5 Garmin HR zones) |
 | Strength & swim | session detail, exercise search and validation |
 | Writing | create running/strength/swim workouts, inspect, delete, calendar, schedule/unschedule, gear, set activity gear |
 

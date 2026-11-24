@@ -144,7 +144,12 @@ mcp = FastMCP(
         "normal del propio corredor, nunca por una noche suelta ni por valores de población. "
         "La VFC sirve sobre todo para frenar (una VFC alta no es luz verde), se ajusta la "
         "intensidad más que el volumen suave, y si las sensaciones del corredor contradicen "
-        "los datos, mandan las sensaciones."
+        "los datos, mandan las sensaciones. Pregunta por las sensaciones solo antes de "
+        "sesiones de calidad.\n\n"
+        "PLANIFICACIÓN: antes de planificar pregunta si hay una carrera próxima. Si la hay, "
+        "pide fecha, distancia, objetivo y terreno y arma el plan completo por fases hasta "
+        "ella; si no, ajusta semana a semana. Prescribe la intensidad con las 5 zonas de "
+        "FC de Garmin del corredor (hr_zones de garmin_get_training_calibration)."
     ),
 )
 
@@ -551,6 +556,31 @@ def _lt_compact() -> dict:
         "power_to_weight": round(pw["powerToWeight"], 2) if pw.get("powerToWeight") else None,
         "weight_kg": pw.get("weight"),
     }
+
+
+def _garmin_hr_zones() -> Optional[dict]:
+    """Las 5 zonas de FC que el corredor tiene configuradas en Garmin, leídas de su última
+    carrera (Garmin guarda el límite inferior de cada zona con la actividad)."""
+    acts = _call("get_activities", 0, 10, "running") or []
+    acts = acts if isinstance(acts, list) else acts.get("activityList", [])
+    for a in acts:
+        aid = a.get("activityId")
+        z = _call("get_activity_hr_in_timezones", aid) if aid else None
+        if not isinstance(z, list):
+            continue
+        lows = sorted((r.get("zoneNumber"), r.get("zoneLowBoundary")) for r in z
+                      if isinstance(r, dict) and isinstance(r.get("zoneLowBoundary"), (int, float)))
+        if len(lows) < 5:
+            continue
+        zones = [{"zone": n, "from_bpm": int(lo),
+                  "to_bpm": int(lows[i + 1][1]) - 1 if i + 1 < len(lows) else None}
+                 for i, (n, lo) in enumerate(lows)]
+        return {"zones": zones,
+                "from_activity": (a.get("startTimeLocal") or "")[:10] or None,
+                "note": "Zonas configuradas en Garmin (por % de FC máxima, de reserva o de "
+                        "umbral, según el usuario). Lectura aproximada: Z1-Z2 suave, Z3 "
+                        "moderado, Z4 alrededor del umbral, Z5 por encima."}
+    return None
 
 
 _ENDURANCE_LEVELS = (("elite", "classificationLowerLimitElite"),
@@ -1969,7 +1999,8 @@ def garmin_get_training_calibration(date: Optional[str] = None) -> dict:
 
     Returns:
         dict: {"date", "lactate_threshold", "vo2max", "training_status",
-               "race_predictions", "readiness_today", "cycle_context" (solo si la
+               "race_predictions", "hr_zones" (las 5 zonas de FC de Garmin),
+               "readiness_today", "cycle_context" (solo si la
                usuaria registra su ciclo: fase y consideraciones de entrenamiento)}.
     """
     cdate = _d(date)
@@ -1999,6 +2030,7 @@ def garmin_get_training_calibration(date: Optional[str] = None) -> dict:
         if ts_v:
             out["vo2max"] = {"vo2max_running": ts_v, "as_of": "estado de entrenamiento"}
     _sub("race_predictions", lambda: _fmt_race_predictions(_call("get_race_predictions")))
+    _sub("hr_zones", _garmin_hr_zones)
     _sub("readiness_today", _readiness)
 
     def _cycle_ctx():
