@@ -18,4 +18,7 @@ COPY skills ./skills
 # Render injects PORT; the server reads it.
 ENV HOST=0.0.0.0
 EXPOSE 8000
+# Sin privilegios: el servidor no escribe en disco.
+RUN useradd --system --uid 10001 --no-create-home app
+USER app
 CMD ["python", "garmin_mcp_server.py"]

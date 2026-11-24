@@ -210,7 +210,9 @@ mcp = FastMCP(
 # (un solo proceso, como en Render).
 _TASKS = TasksExtension is not None
 if _TASKS:
-    mcp.add_extension(TasksExtension())
+    # Máximo 2 tareas a la vez: suficiente para un usuario y amable con los límites de
+    # Garmin Connect (muchas consultas simultáneas pueden bloquear la cuenta un rato).
+    mcp.add_extension(TasksExtension(concurrency=2))
 
 
 def _bg_tool(**tool_kwargs):
@@ -237,7 +239,7 @@ def _client_can_elicit(ctx: Context) -> bool:
     return bool(caps is not None and getattr(caps, "elicitation", None) is not None)
 
 
-async def _confirm(ctx: Context, message: str):
+async def _confirm(ctx: Context, message: str, binding: str = ""):
     """Pide confirmación al usuario desde el servidor.
 
     Devuelve "si", "no", "sin_soporte" (el cliente no puede preguntar: la confirmación
@@ -250,7 +252,9 @@ async def _confirm(ctx: Context, message: str):
     try:
         if ctx._is_modern_protocol():
             answers = ctx.input_responses
-            if answers and _CONFIRM_KEY in answers:
+            # La respuesta solo vale para lo que se mostró: request_state va sellado por
+            # el framework y debe coincidir con los ids de esta llamada.
+            if answers and _CONFIRM_KEY in answers and ctx.request_state == binding:
                 r = answers[_CONFIRM_KEY]
                 content = getattr(r, "content", None) or {}
                 ok = getattr(r, "action", None) == "accept" and content.get("value") is True
@@ -265,6 +269,7 @@ async def _confirm(ctx: Context, message: str):
                             "properties": {"value": {"type": "boolean", "title": "Borrar",
                                                      "default": False}},
                             "required": ["value"]}))},
+                request_state=binding or None,
                 result_type="input_required")
         res = await ctx.elicit(message, bool, response_title="Borrar")
         return "si" if getattr(res, "data", None) is True else "no"
@@ -333,13 +338,18 @@ def _call(method: str, *args, **kwargs) -> Any:
     """Llama un método del cliente. Si la auth falla (p. ej. token caducado o
     invalidado por un cambio de contraseña), reconstruye forzando login con
     credenciales —auto-recuperación— y reintenta una vez."""
+    global _client
+    stale = _get_client()
     try:
-        return getattr(_get_client(), method)(*args, **kwargs)
+        return getattr(stale, method)(*args, **kwargs)
     except GarminConnectAuthenticationError:
-        global _client
         with _lock:
-            _client = _build_client(force_credentials=True)
-        return getattr(_client, method)(*args, **kwargs)
+            # Solo el primer hilo que ve el fallo vuelve a iniciar sesión; los demás
+            # reutilizan el cliente nuevo (evita ráfagas de login que bloquean la cuenta).
+            if _client is stale or _client is None:
+                _client = _build_client(force_credentials=True)
+            fresh = _client
+        return getattr(fresh, method)(*args, **kwargs)
 
 
 _SCRUB = (
@@ -3063,9 +3073,10 @@ async def _confirmed_delete(workout_ids: list, ctx: Context):
     names = await anyio.to_thread.run_sync(_workout_names, ids)
     lines = "\n".join(f"- {names.get(w) or 'sin nombre'} (id {w})" for w in ids)
     what = "este entrenamiento" if len(ids) == 1 else f"estos {len(ids)} entrenamientos"
+    binding = "delete:" + ",".join(sorted(ids))
     answer = await _confirm(
         ctx, f"¿Borrar de Garmin Connect {what} y su agenda en el reloj? "
-             f"No se puede deshacer.\n{lines}")
+             f"No se puede deshacer.\n{lines}", binding)
     if isinstance(answer, mcp_types.InputRequiredResult):
         return answer
     if answer == "no":

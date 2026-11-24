@@ -32,6 +32,8 @@ bundle includes the two skills for $8 instead of $10.
 - **The connector URL is the key.** Render generates a random `MCP_SECRET`; the endpoint is
   `https://<your-service>.onrender.com/mcp/<secret>`. Without it, the server answers nothing
   but `/health`. The server refuses to start in the cloud without a secret.
+- **Least privilege.** The container runs as an unprivileged user and writes nothing to disk.
+  Deleting workouts asks you first, and your "yes" only covers the workouts it listed.
 - **Nothing is sent anywhere else**, except Open-Meteo (coordinates and time only) when you
   ask for session weather.
 
