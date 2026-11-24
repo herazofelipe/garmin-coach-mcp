@@ -354,9 +354,9 @@ def _cause_text(exc: BaseException) -> str:
     parts, seen = [], set()
     while exc is not None and id(exc) not in seen and len(parts) < 4:
         seen.add(id(exc))
-        parts.append(f"{type(exc).__name__}: {exc}")
+        parts.append(f"{type(exc).__name__}: {_scrub(exc)}")
         exc = exc.__cause__ or exc.__context__
-    return _scrub(" <- ".join(parts))
+    return " <- ".join(parts)
 
 
 def _get_client() -> Garmin:

@@ -259,3 +259,15 @@ def test_login_pause_ends_and_success_clears_it(m, monkeypatch):
     monkeypatch.setattr(m, "_login_paused_until", 0.0)   # pause already over
     assert m._call("get_x") == "ok"
     assert m._login_paused_until == 0.0
+
+
+def test_cause_text_keeps_error_names_but_scrubs_secrets(m):
+    try:
+        try:
+            raise RuntimeError("API Error 401 for persona@example.com")
+        except RuntimeError as inner:
+            raise m.GarminConnectAuthenticationError("Failed to retrieve social profile") from inner
+    except m.GarminConnectAuthenticationError as exc:
+        text = m._cause_text(exc)
+    assert "GarminConnectAuthenticationError" in text and "401" in text
+    assert "persona@example.com" not in text
