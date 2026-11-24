@@ -4816,8 +4816,9 @@ if _GUIDE_FILE.exists():
             updated = datetime.fromtimestamp(_GUIDE_FILE.stat().st_mtime,
                                              timezone.utc).date().isoformat()
             if section:
-                hit = next((k for k in secs if k.lower() == section.strip().lower()), None) \
-                    or next((k for k in secs if section.strip().lower() in k.lower()), None)
+                q = section.strip().lower()
+                hit = next((k for k in secs if k.lower() in (q, f"appendix - {q}")), None) \
+                    or next((k for k in secs if q in k.lower()), None)
                 if not hit:
                     return {"updated": updated, "sections": list(secs),
                             "error": "Sección no encontrada."}
