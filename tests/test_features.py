@@ -155,3 +155,34 @@ def test_trend_runs_as_background_task(m, fake_garmin):
 
     plain, done = asyncio.run(run())
     assert plain["count"] == done["count"] == 60
+
+
+def test_activity_analysis_keeps_all_garmin_stats(m, fake_garmin):
+    """The compact format must not drop what Garmin Connect shows in Statistics
+    (the left/right ground contact balance was lost once this way)."""
+    summary = {"activityId": 1, "activityName": "Cinta", "activityTypeDTO": {"typeKey": "treadmill_running"},
+               "summaryDTO": {"duration": 3600, "movingDuration": 3500, "distance": 9800, "averageSpeed": 2.72,
+                              "averageHR": 140, "maxHR": 165, "averageRunCadence": 147, "maxRunCadence": 226,
+                              "strideLength": 110.4, "verticalRatio": 9.0, "verticalOscillation": 9.6,
+                              "groundContactTime": 260, "avgGroundContactBalance": 49.3,
+                              "avgRespirationRate": 31.6, "differenceBodyBattery": -14,
+                              "trainingEffectLabel": "THRESHOLD", "activityTrainingLoad": 151.2,
+                              "avgSomeNewPowerMetric": 3.14159}}
+    lap = {"lapIndex": 1, "duration": 600, "distance": 2100, "averageRunCadence": 166,
+           "strideLength": 124, "groundContactTime": 239, "groundContactBalanceLeft": 4930,
+           "verticalOscillation": 9.1, "verticalRatio": 7.4}
+    fake_garmin({"get_activity": summary, "get_activity_splits": {"lapDTOs": [lap]},
+                 "get_activity_typed_splits": {"splits": [{**lap, "type": "INTERVAL_ACTIVE"}]},
+                 "get_activity_hr_in_timezones": [], "get_activity_power_in_timezones": []})
+    r = m.garmin_get_activity_analysis("1")
+    rd = r["stats"]["running_dynamics"]
+    assert rd["gct_balance"] == {"left_pct": 49.3, "right_pct": 50.7}
+    assert (rd["avg_cadence_spm"], rd["max_cadence_spm"], rd["stride_m"]) == (147, 226, 1.1)
+    assert (rd["vertical_ratio_pct"], rd["vertical_osc_cm"], rd["gct_ms"]) == (9.0, 9.6, 260)
+    assert r["stats"]["respiration"]["avg_brpm"] == 32
+    assert r["stats"]["body_battery"]["impact"] == -14
+    assert r["stats"]["other_garmin_fields"] == {"avgSomeNewPowerMetric": 3.14}
+    assert r["summary"]["gct_balance"] == {"left_pct": 49.3, "right_pct": 50.7}
+    for part in (r["laps"][0], r["blocks"][0]):
+        assert part["gct_balance"] == {"left_pct": 49.3, "right_pct": 50.7}
+        assert (part["vertical_osc_cm"], part["vertical_ratio_pct"]) == (9.1, 7.4)

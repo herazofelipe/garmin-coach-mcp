@@ -540,6 +540,7 @@ def _slim_activity_raw(a: dict) -> dict:
         "vertical_osc_cm": g("avgVerticalOscillation", "verticalOscillation"),
         "vertical_ratio_pct": g("avgVerticalRatio", "verticalRatio"),
         "stride_length_cm": g("avgStrideLength", "strideLength"),
+        "gct_balance": _gct_balance(g(*_GCT_BAL_KEYS)),
     }
 
 
@@ -1137,7 +1138,127 @@ def _compact_lap(x: dict, i: int) -> dict:
         "cadence_spm": _r1(x.get("averageRunCadence"), 1, 0),
         "stride_cm": _r1(x.get("strideLength"), 1, 0),
         "gct_ms": _r1(x.get("groundContactTime"), 1, 0),
+        "gct_balance": _gct_balance(_num_of(x, _GCT_BAL_KEYS)),
+        "vertical_osc_cm": _r1(_num_of(x, ("verticalOscillation", "avgVerticalOscillation")), 1, 1),
+        "vertical_ratio_pct": _r1(_num_of(x, ("verticalRatio", "avgVerticalRatio")), 1, 1),
+        "max_cadence_spm": _r1(_num_of(x, ("maxRunCadence", "maxRunningCadenceInStepsPerMinute")), 1, 0),
+        "max_power_w": _r1(x.get("maxPower"), 1, 0),
+        "gap_min_km": _pace(_num_of(x, ("avgGradeAdjustedSpeed",))),
+        "avg_respiration_brpm": _r1(_num_of(x, ("avgRespirationRate",)), 1, 0),
+        "step_speed_loss_cm_s": _r1(_num_of(x, ("avgStepSpeedLoss",)), 1, 1),
+        "step_speed_loss_pct": _r1(_num_of(x, ("avgStepSpeedLossPercent",)), 1, 1),
     }.items() if v is not None}
+
+
+# Claves con las que Garmin entrega el balance de tiempo de contacto (izquierda, en %).
+# Varían entre resumen y vueltas, así que se prueban todas.
+_GCT_BAL_KEYS = ("avgGroundContactBalance", "groundContactBalanceLeft",
+                 "avgGroundContactBalanceLeft", "groundContactBalance")
+
+
+def _num_of(src: dict, keys: tuple) -> Any:
+    for k in keys:
+        v = src.get(k)
+        if isinstance(v, (int, float)) and not isinstance(v, bool):
+            return v
+    return None
+
+
+def _gct_balance(left: Any) -> Optional[dict]:
+    """Balance izq/der del tiempo de contacto, como en Garmin Connect (49,3 % I / 50,7 % D)."""
+    if not isinstance(left, (int, float)) or isinstance(left, bool) or left <= 0:
+        return None
+    if left > 100:          # algunas respuestas vienen en centésimas (4930 = 49,30 %)
+        left = left / 100.0
+    if not 30 <= left <= 70:
+        return None
+    return {"left_pct": round(left, 1), "right_pct": round(100 - left, 1)}
+
+
+def _minutes(v: Any) -> Optional[float]:
+    return _r1(v, 60.0, 1)
+
+
+# Estadísticas de la pestaña "Estadísticas" de Garmin Connect: (sección, nombre, claves, conversión).
+_STAT_FIELDS: tuple = (
+    ("time", "total_min", ("duration",), _minutes),
+    ("time", "moving_min", ("movingDuration",), _minutes),
+    ("time", "elapsed_min", ("elapsedDuration",), _minutes),
+    ("pace", "avg_min_km", ("averageSpeed",), _pace),
+    ("pace", "avg_moving_min_km", ("averageMovingSpeed",), _pace),
+    ("pace", "best_min_km", ("maxSpeed",), _pace),
+    ("pace", "gap_min_km", ("avgGradeAdjustedSpeed",), _pace),
+    ("heart_rate", "avg_bpm", ("averageHR",), lambda v: _r1(v, 1, 0)),
+    ("heart_rate", "max_bpm", ("maxHR",), lambda v: _r1(v, 1, 0)),
+    ("heart_rate", "min_bpm", ("minHR",), lambda v: _r1(v, 1, 0)),
+    ("running_dynamics", "avg_cadence_spm", ("averageRunCadence", "averageRunningCadenceInStepsPerMinute"), lambda v: _r1(v, 1, 0)),
+    ("running_dynamics", "max_cadence_spm", ("maxRunCadence", "maxRunningCadenceInStepsPerMinute"), lambda v: _r1(v, 1, 0)),
+    ("running_dynamics", "stride_m", ("strideLength", "avgStrideLength"), lambda v: _r1(v, 100.0, 2)),
+    ("running_dynamics", "vertical_ratio_pct", ("verticalRatio", "avgVerticalRatio"), lambda v: _r1(v, 1, 1)),
+    ("running_dynamics", "vertical_osc_cm", ("verticalOscillation", "avgVerticalOscillation"), lambda v: _r1(v, 1, 1)),
+    ("running_dynamics", "gct_balance", _GCT_BAL_KEYS, _gct_balance),
+    ("running_dynamics", "gct_ms", ("groundContactTime", "avgGroundContactTime"), lambda v: _r1(v, 1, 0)),
+    ("running_dynamics", "step_speed_loss_cm_s", ("avgStepSpeedLoss",), lambda v: _r1(v, 1, 1)),
+    ("running_dynamics", "step_speed_loss_pct", ("avgStepSpeedLossPercent",), lambda v: _r1(v, 1, 1)),
+    ("power", "avg_w", ("averagePower", "avgPower"), lambda v: _r1(v, 1, 0)),
+    ("power", "max_w", ("maxPower",), lambda v: _r1(v, 1, 0)),
+    ("power", "normalized_w", ("normalizedPower", "normPower"), lambda v: _r1(v, 1, 0)),
+    ("training_effect", "aerobic", ("trainingEffect", "aerobicTrainingEffect"), lambda v: _r1(v, 1, 1)),
+    ("training_effect", "anaerobic", ("anaerobicTrainingEffect",), lambda v: _r1(v, 1, 1)),
+    ("training_effect", "load", ("activityTrainingLoad",), lambda v: _r1(v, 1, 0)),
+    ("training_effect", "primary_benefit", ("trainingEffectLabel",), lambda v: v),
+    ("elevation", "gain_m", ("elevationGain",), lambda v: _r1(v, 1, 0)),
+    ("elevation", "loss_m", ("elevationLoss",), lambda v: _r1(v, 1, 0)),
+    ("elevation", "min_m", ("minElevation",), lambda v: _r1(v, 1, 0)),
+    ("elevation", "max_m", ("maxElevation",), lambda v: _r1(v, 1, 0)),
+    ("respiration", "avg_brpm", ("avgRespirationRate",), lambda v: _r1(v, 1, 0)),
+    ("respiration", "min_brpm", ("minRespirationRate",), lambda v: _r1(v, 1, 0)),
+    ("respiration", "max_brpm", ("maxRespirationRate",), lambda v: _r1(v, 1, 0)),
+    ("temperature", "avg_c", ("averageTemperature", "avgTemperature"), lambda v: _r1(v, 1, 1)),
+    ("temperature", "min_c", ("minTemperature",), lambda v: _r1(v, 1, 1)),
+    ("temperature", "max_c", ("maxTemperature",), lambda v: _r1(v, 1, 1)),
+    ("nutrition_hydration", "calories", ("calories",), lambda v: _r1(v, 1, 0)),
+    ("nutrition_hydration", "bmr_calories", ("bmrCalories",), lambda v: _r1(v, 1, 0)),
+    ("nutrition_hydration", "sweat_loss_ml", ("waterEstimated",), lambda v: _r1(v, 1, 0)),
+    ("intensity_minutes", "moderate", ("moderateIntensityMinutes",), lambda v: _r1(v, 1, 0)),
+    ("intensity_minutes", "vigorous", ("vigorousIntensityMinutes",), lambda v: _r1(v, 1, 0)),
+    ("body_battery", "impact", ("differenceBodyBattery",), lambda v: _r1(v, 1, 0)),
+    ("stamina", "start_pct", ("beginPotentialStamina",), lambda v: _r1(v, 1, 0)),
+    ("stamina", "end_pct", ("endPotentialStamina",), lambda v: _r1(v, 1, 0)),
+    ("stamina", "min_available_pct", ("minAvailableStamina",), lambda v: _r1(v, 1, 0)),
+    ("steps", "total", ("steps",), lambda v: _r1(v, 1, 0)),
+)
+
+# Lo que Garmin agregue y aún no esté en la tabla de arriba no se pierde: si su nombre
+# toca alguno de estos temas, sale tal cual en "other_garmin_fields".
+_STAT_EXTRA_HINTS = ("balance", "cadence", "stride", "vertical", "groundcontact", "power",
+                     "respiration", "stepspeed", "grade", "stamina", "temperature",
+                     "performancecondition", "lactate", "economy", "impact", "sweat", "water")
+
+
+def _activity_stats(full: Any) -> Optional[dict]:
+    """Todas las estadísticas de la actividad, agrupadas como en Garmin Connect."""
+    if not isinstance(full, dict):
+        return None
+    src = {**full, **(full.get("summaryDTO") or {})}
+    out: dict[str, dict] = {}
+    used: set = set()
+    for sec, name, keys, conv in _STAT_FIELDS:
+        for k in keys:
+            v = src.get(k)
+            if v is None or isinstance(v, (dict, list)):
+                continue
+            used.update(keys)
+            val = conv(v)
+            if val is not None:
+                out.setdefault(sec, {})[name] = val
+            break
+    extra = {k: (round(v, 2) if isinstance(v, float) else v) for k, v in src.items()
+             if k not in used and isinstance(v, (int, float)) and not isinstance(v, bool)
+             and any(h in k.lower() for h in _STAT_EXTRA_HINTS)}
+    if extra:
+        out["other_garmin_fields"] = extra
+    return out or None
 
 
 def _compact_zones(z: Any) -> Any:
@@ -1168,8 +1289,16 @@ def garmin_get_activity_analysis(activity_id: str, include_weather: bool = False
             Sin GPS (cinta) no hay consulta a Open-Meteo. Por defecto False.
 
     Returns:
-        dict: {"activity_id", "summary", "laps", "blocks", "hr_zones", "power_zones",
-               "weather"(opc.)}. "laps" son las vueltas; "blocks" los bloques del
+        dict: {"activity_id", "summary", "stats", "laps", "blocks", "hr_zones",
+               "power_zones", "weather"(opc.)}. "stats" trae todo lo de la pestaña
+               Estadísticas de Garmin Connect, agrupado: tiempo, ritmo (incluido GAP),
+               FC, dinámica de carrera (cadencia media y máx., zancada, relación y
+               oscilación vertical, balance izq/der del contacto, contacto, pérdida de
+               velocidad por paso), potencia, efecto de entrenamiento y carga, desnivel,
+               respiración, temperatura, calorías y sudor, minutos de intensidad,
+               impacto en Body Battery y stamina; solo lo que Garmin registró.
+               Cada vuelta y bloque trae también su balance, oscilación y relación
+               vertical. "laps" son las vueltas; "blocks" los bloques del
                entrenamiento (calentamiento, activos, recuperación, vuelta a la calma),
                sin los micro-tramos de correr/caminar/parado que Garmin detecta solo.
                Distancias en km, duraciones en min, zonas en minutos. Cada sub-bloque
@@ -1189,6 +1318,7 @@ def garmin_get_activity_analysis(activity_id: str, include_weather: bool = False
     try:
         full = _call("get_activity", aid)
         out["summary"] = _slim_activity(full) if isinstance(full, dict) else full
+        out["stats"] = _activity_stats(full)
     except Exception as e:  # noqa: BLE001
         out["summary"] = None
         out["_notes"]["summary"] = f"{type(e).__name__}: {_scrub(e)}"
